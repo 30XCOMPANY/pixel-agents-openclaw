@@ -171,7 +171,8 @@ export function ToolOverlay({
                 style={{
                   fontSize: isSub ? '20px' : '22px',
                   fontStyle: isSub ? 'italic' : undefined,
-                  color: 'var(--vscode-foreground)',
+                  color: 'var(--vscode-foreground, #EEF4FF)',
+                  textShadow: '0 1px 0 rgba(0, 0, 0, 0.85)',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                 }}

@@ -14,16 +14,38 @@
 ```bash
 cd ~/.openclaw/workspace/pixel-agents-openclaw
 
-# 启动服务
-npx tsx server.ts
+# 启动服务（推荐，避免 tsx CLI 在部分环境的 IPC 问题）
+npm run openclaw:start
 ```
 
 服务运行在 http://localhost:3456
 
+默认会自动扫描当前用户目录下所有 OpenClaw agent 的会话文件：
+`~/.openclaw/agents/*/sessions/sessions.json`
+
+并按 `agentName` 聚合：每个 OpenClaw agent 只对应一个像素小人（不再按 session 一条一人）。
+
+可通过环境变量覆盖：
+
+```bash
+SESSIONS_FILE=/path/to/sessions.json npm run openclaw:start
+```
+
+## 皮肤资产说明
+
+- 不需要购买付费皮肤才能运行。
+- 如果找不到 `furniture-catalog.json`，服务会自动回退到内置家具布局（免费可用）。
+- 如果找到 `assets/characters/char_0.png` 到 `char_5.png`，会自动下发为人物皮肤；缺失时自动回退内置人物模板。
+- 地板纹理优先读取 `floors.png`；缺失时自动生成 7 套灰度地板纹理。墙体会自动读取 `walls.png`（缺失时回退纯色墙体）。
+- 若你后续有自定义家具包，放到以下任一位置即可自动加载：
+  - `assets/furniture/furniture-catalog.json`
+  - `dist/assets/furniture/furniture-catalog.json`
+  - `webview-ui/public/assets/furniture/furniture-catalog.json`
+
 ## 架构
 
 - **server.ts** - HTTP + SSE 服务器
-  - 轮询 `~/.openclaw/agents/main/sessions/sessions.json`
+  - 轮询 `~/.openclaw/agents/*/sessions/sessions.json`（可用 `SESSIONS_FILE` 覆盖）
   - 通过 Server-Sent Events 推送状态给前端
 - **webview-ui/** - React + Canvas 前端
   - 保留原版像素风渲染

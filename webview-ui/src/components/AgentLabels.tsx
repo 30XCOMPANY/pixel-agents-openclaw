@@ -111,8 +111,10 @@ export function AgentLabels({
               style={{
                 fontSize: isSub ? '16px' : '18px',
                 fontStyle: isSub ? 'italic' : undefined,
-                color: 'var(--vscode-foreground)',
-                background: 'rgba(30,30,46,0.7)',
+                color: 'var(--vscode-editor-foreground, #EEF4FF)',
+                background: 'rgba(10, 14, 30, 0.82)',
+                border: '1px solid rgba(146, 179, 255, 0.38)',
+                textShadow: '0 1px 0 rgba(0, 0, 0, 0.9), 0 0 3px rgba(0, 0, 0, 0.7)',
                 padding: '1px 4px',
                 borderRadius: 2,
                 whiteSpace: 'nowrap',

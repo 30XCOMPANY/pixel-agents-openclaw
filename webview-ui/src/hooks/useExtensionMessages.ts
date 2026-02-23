@@ -76,8 +76,7 @@ export function useExtensionMessages(
     // Buffer agents from existingAgents until layout is loaded
     let pendingAgents: Array<{ id: number; palette?: number; hueShift?: number; seatId?: string }> = []
 
-    const handler = (e: MessageEvent) => {
-      const msg = e.data
+    const processMessage = (msg: any) => {
       const os = getOfficeState()
 
       if (msg.type === 'layoutLoaded') {
@@ -107,9 +106,12 @@ export function useExtensionMessages(
         }
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number
+        const palette = typeof msg.palette === 'number' ? (msg.palette as number) : undefined
+        const hueShift = typeof msg.hueShift === 'number' ? (msg.hueShift as number) : undefined
+        const seatId = typeof msg.seatId === 'string' ? (msg.seatId as string) : undefined
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]))
         setSelectedAgent(id)
-        os.addAgent(id)
+        os.addAgent(id, palette, hueShift, seatId)
         saveAgentSeats(os)
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number
@@ -140,10 +142,19 @@ export function useExtensionMessages(
       } else if (msg.type === 'existingAgents') {
         const incoming = msg.agents as number[]
         const meta = (msg.agentMeta || {}) as Record<number, { palette?: number; hueShift?: number; seatId?: string }>
-        // Buffer agents — they'll be added in layoutLoaded after seats are built
-        for (const id of incoming) {
-          const m = meta[id]
-          pendingAgents.push({ id, palette: m?.palette, hueShift: m?.hueShift, seatId: m?.seatId })
+        // Before layout is ready, buffer and apply after layoutLoaded.
+        // After layout is ready (SSE reconnect / server order differences), add immediately.
+        if (!layoutReadyRef.current) {
+          for (const id of incoming) {
+            const m = meta[id]
+            pendingAgents.push({ id, palette: m?.palette, hueShift: m?.hueShift, seatId: m?.seatId })
+          }
+        } else {
+          for (const id of incoming) {
+            const m = meta[id]
+            os.addAgent(id, m?.palette, m?.hueShift, m?.seatId, true)
+          }
+          if (incoming.length > 0) saveAgentSeats(os)
         }
         setAgents((prev) => {
           const ids = new Set(prev)
@@ -316,17 +327,31 @@ export function useExtensionMessages(
         os.removeSubagent(id, parentToolId)
         setSubagentCharacters((prev) => prev.filter((s) => !(s.parentAgentId === id && s.parentToolId === parentToolId)))
       } else if (msg.type === 'characterSpritesLoaded') {
-        const characters = msg.characters as Array<{ down: string[][][]; up: string[][][]; right: string[][][] }>
-        console.log(`[Webview] Received ${characters.length} pre-colored character sprites`)
-        setCharacterTemplates(characters)
+        const characters = Array.isArray(msg.characters)
+          ? (msg.characters as Array<{ down: string[][][]; up: string[][][]; right: string[][][] }>)
+          : []
+        if (characters.length > 0) {
+          console.log(`[Webview] Received ${characters.length} pre-colored character sprites`)
+          setCharacterTemplates(characters)
+        } else {
+          console.log('[Webview] No character sprites payload, using built-in fallback sprites')
+        }
       } else if (msg.type === 'floorTilesLoaded') {
-        const sprites = msg.sprites as string[][][]
-        console.log(`[Webview] Received ${sprites.length} floor tile patterns`)
-        setFloorSprites(sprites)
+        const sprites = Array.isArray(msg.sprites) ? (msg.sprites as string[][][]) : null
+        if (sprites && sprites.length > 0) {
+          console.log(`[Webview] Received ${sprites.length} floor tile patterns`)
+          setFloorSprites(sprites)
+        } else {
+          console.log('[Webview] No floor tile payload, using built-in fallback floor tile')
+        }
       } else if (msg.type === 'wallTilesLoaded') {
-        const sprites = msg.sprites as string[][][]
-        console.log(`[Webview] Received ${sprites.length} wall tile sprites`)
-        setWallSprites(sprites)
+        const sprites = Array.isArray(msg.sprites) ? (msg.sprites as string[][][]) : null
+        if (sprites && sprites.length > 0) {
+          console.log(`[Webview] Received ${sprites.length} wall tile sprites`)
+          setWallSprites(sprites)
+        } else {
+          console.log('[Webview] No wall tile payload, using built-in fallback wall rendering')
+        }
       } else if (msg.type === 'settingsLoaded') {
         const soundOn = msg.soundEnabled as boolean
         setSoundEnabled(soundOn)
@@ -343,9 +368,20 @@ export function useExtensionMessages(
         }
       }
     }
-    window.addEventListener('message', handler)
+
+    // VS Code webview messages
+    const windowHandler = (event: MessageEvent) => processMessage(event.data)
+    window.addEventListener('message', windowHandler)
+
+    // Browser SSE messages (OpenClaw mode)
+    vscode.addMessageHandler(processMessage)
+
     vscode.postMessage({ type: 'webviewReady' })
-    return () => window.removeEventListener('message', handler)
+
+    return () => {
+      window.removeEventListener('message', windowHandler)
+      vscode.removeMessageHandler(processMessage)
+    }
   }, [getOfficeState])
 
   return { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets }
