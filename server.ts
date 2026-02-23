@@ -32,6 +32,7 @@ interface AgentInfo {
   status: string;
   currentTask: string;
   channel?: string;
+  palette?: number;
 }
 
 const app = express();
@@ -57,8 +58,21 @@ app.get('/events', (req, res) => {
   clients.add(res);
   console.log(`[Pixel Agents] Client connected. Total: ${clients.size}`);
 
-  // Send initial state
-  res.write(`data: ${JSON.stringify({ type: 'existingAgents', agents: Array.from(agents.values()) })}\n\n`);
+  // Send default layout (triggers webview to use default)
+  res.write(`data: ${JSON.stringify({ type: 'layoutLoaded', layout: null })}\n\n`);
+  
+  // Send character sprites loaded (uses built-in fallback)
+  res.write(`data: ${JSON.stringify({ type: 'characterSpritesLoaded' })}\n\n`);
+  
+  // Send floor tiles loaded
+  res.write(`data: ${JSON.stringify({ type: 'floorTilesLoaded' })}\n\n`);
+  
+  // Send wall tiles loaded
+  res.write(`data: ${JSON.stringify({ type: 'wallTilesLoaded' })}\n\n`);
+
+  // Send existing agents - webview expects array of numbers
+  const agentIds = Array.from(agents.values()).map(a => a.id);
+  res.write(`data: ${JSON.stringify({ type: 'existingAgents', agents: agentIds })}\n\n`);
 
   req.on('close', () => {
     clients.delete(res);
@@ -69,6 +83,18 @@ app.get('/events', (req, res) => {
 // API to get current agents
 app.get('/api/agents', (req, res) => {
   res.json(Array.from(agents.values()));
+});
+
+// API to get single agent details
+app.get('/api/agents/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  for (const agent of agents.values()) {
+    if (agent.id === id) {
+      res.json(agent);
+      return;
+    }
+  }
+  res.status(404).json({ error: 'Agent not found' });
 });
 
 // Broadcast to all connected clients
@@ -83,7 +109,6 @@ function broadcast(message: any): void {
 function pollSessions(): void {
   try {
     if (!existsSync(SESSIONS_FILE)) {
-      console.log(`[Pixel Agents] Sessions file not found: ${SESSIONS_FILE}`);
       return;
     }
 
@@ -112,9 +137,11 @@ function pollSessions(): void {
       const isRecent = (now - lastActive) < 5 * 60 * 1000; // 5 minutes
       const status = session.chatType === 'system' || !isRecent ? 'idle' : 'active';
       
-      const currentTask = `Session ${session.chatType}`;
+      const channel = session.deliveryContext?.channel || session.origin?.provider || 'unknown';
+      const currentTask = `Chat: ${channel}`;
 
       if (!agent) {
+        const palette = (nextAgentId - 1) % 6; // Cycle through 6 palettes
         agent = {
           id: nextAgentId++,
           sessionKey: key,
@@ -122,28 +149,45 @@ function pollSessions(): void {
           model: 'MiniMax-M2.5',
           status,
           currentTask,
-          channel: session.deliveryContext?.channel || session.origin?.provider || 'unknown',
+          channel,
+          palette,
         };
         agents.set(key, agent);
-        broadcast({ type: 'agentCreated', id: agent.id, sessionKey: key });
+        
+        // Send agent created
+        broadcast({ 
+          type: 'agentCreated', 
+          id: agent.id,
+          palette: agent.palette,
+          hueShift: 0,
+          seatId: null
+        });
+        
+        // Simulate starting a task after a short delay
+        setTimeout(() => {
+          broadcast({ 
+            type: 'agentToolStart', 
+            id: agent!.id, 
+            toolId: `tool-${Date.now()}`,
+            status: currentTask
+          });
+        }, 1000 + Math.random() * 1000);
       } else {
-        // Update existing
+        // Update existing - send status changes
         if (agent.status !== status) {
           agent.status = status;
           broadcast({ type: 'agentStatus', id: agent.id, status });
-        }
-        if (agent.currentTask !== currentTask) {
-          agent.currentTask = currentTask;
-          broadcast({ type: 'agentToolDone', id: agent.id, toolName: currentTask });
+          
+          if (status === 'idle') {
+            // Clear tools when going idle
+            broadcast({ type: 'agentToolsClear', id: agent.id });
+          }
         }
       }
     }
 
-    // Broadcast full state periodically
-    broadcast({ type: 'existingAgents', agents: Array.from(agents.values()) });
-
   } catch (error) {
-    console.log(`[Pixel Agents] Polling error:`, error);
+    // Silent fail on polling errors
   }
 }
 
