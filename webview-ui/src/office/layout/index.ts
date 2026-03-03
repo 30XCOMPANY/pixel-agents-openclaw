@@ -11,6 +11,12 @@ export {
   deserializeLayout,
 } from './layoutSerializer.js'
 export {
+  getLayoutPresetOptions,
+  createLayoutFromPreset,
+  createDefaultLayoutPreset,
+} from './layoutPresets.js'
+export type { LayoutPresetId, LayoutPresetOption } from './layoutPresets.js'
+export {
   isWalkable,
   getWalkableTiles,
   findPath,

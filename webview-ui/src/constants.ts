@@ -49,23 +49,23 @@ export const BUTTON_LINE_WIDTH_ZOOM_FACTOR = 0.5
 export const BUBBLE_FADE_DURATION_SEC = 0.5
 export const BUBBLE_SITTING_OFFSET_PX = 10
 export const BUBBLE_VERTICAL_OFFSET_PX = 24
-export const FALLBACK_FLOOR_COLOR = '#808080'
+export const FALLBACK_FLOOR_COLOR = '#D5DDE2'
 
 // ── Rendering - Overlay Colors (canvas, not CSS) ─────────────
 export const SEAT_OWN_COLOR = 'rgba(0, 127, 212, 0.35)'
 export const SEAT_AVAILABLE_COLOR = 'rgba(0, 200, 80, 0.35)'
 export const SEAT_BUSY_COLOR = 'rgba(220, 50, 50, 0.35)'
-export const GRID_LINE_COLOR = 'rgba(255,255,255,0.12)'
-export const VOID_TILE_OUTLINE_COLOR = 'rgba(255,255,255,0.08)'
+export const GRID_LINE_COLOR = 'rgba(54, 70, 82, 0.17)'
+export const VOID_TILE_OUTLINE_COLOR = 'rgba(54, 70, 82, 0.14)'
 export const VOID_TILE_DASH_PATTERN: [number, number] = [2, 2]
 export const GHOST_BORDER_HOVER_FILL = 'rgba(60, 130, 220, 0.25)'
 export const GHOST_BORDER_HOVER_STROKE = 'rgba(60, 130, 220, 0.5)'
-export const GHOST_BORDER_STROKE = 'rgba(255, 255, 255, 0.06)'
-export const GHOST_VALID_TINT = '#00ff00'
-export const GHOST_INVALID_TINT = '#ff0000'
-export const SELECTION_HIGHLIGHT_COLOR = '#007fd4'
-export const DELETE_BUTTON_BG = 'rgba(200, 50, 50, 0.85)'
-export const ROTATE_BUTTON_BG = 'rgba(50, 120, 200, 0.85)'
+export const GHOST_BORDER_STROKE = 'rgba(69, 90, 105, 0.2)'
+export const GHOST_VALID_TINT = '#5AA186'
+export const GHOST_INVALID_TINT = '#BE6767'
+export const SELECTION_HIGHLIGHT_COLOR = '#4D889F'
+export const DELETE_BUTTON_BG = 'rgba(174, 86, 86, 0.9)'
+export const ROTATE_BUTTON_BG = 'rgba(83, 128, 146, 0.9)'
 
 // ── Camera ───────────────────────────────────────────────────
 export const CAMERA_FOLLOW_LERP = 0.1

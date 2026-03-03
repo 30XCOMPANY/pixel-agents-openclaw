@@ -1,7 +1,15 @@
+/**
+ * [INPUT]: 依赖 OfficeState、工具状态、子代理数据与画布视口参数
+ * [OUTPUT]: 对外提供 ToolOverlay 组件，渲染 hover/selected 角色的活动气泡
+ * [POS]: office/components 叠加层，被 App 与 OfficeCanvas 共同驱动
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { useState, useEffect } from 'react'
 import type { ToolActivity } from '../types.js'
 import type { OfficeState } from '../engine/officeState.js'
 import type { SubagentCharacter } from '../../hooks/useExtensionMessages.js'
+import type { AgentRuntimeInfo } from '../../hooks/useExtensionMessages.js'
 import { TILE_SIZE, CharacterState } from '../types.js'
 import { TOOL_OVERLAY_VERTICAL_OFFSET, CHARACTER_SITTING_OFFSET_PX } from '../../constants.js'
 
@@ -9,6 +17,7 @@ interface ToolOverlayProps {
   officeState: OfficeState
   agents: number[]
   agentTools: Record<number, ToolActivity[]>
+  agentRuntime: Record<number, AgentRuntimeInfo>
   subagentCharacters: SubagentCharacter[]
   containerRef: React.RefObject<HTMLDivElement | null>
   zoom: number
@@ -16,10 +25,17 @@ interface ToolOverlayProps {
   onCloseAgent: (id: number) => void
 }
 
+interface OverlayFrame {
+  dpr: number
+  deviceOffsetX: number
+  deviceOffsetY: number
+}
+
 /** Derive a short human-readable activity string from tools/status */
 function getActivityText(
   agentId: number,
   agentTools: Record<number, ToolActivity[]>,
+  agentRuntime: Record<number, AgentRuntimeInfo>,
   isActive: boolean,
 ): string {
   const tools = agentTools[agentId]
@@ -37,32 +53,36 @@ function getActivityText(
     }
   }
 
+  const runtime = agentRuntime[agentId]
+  if (runtime) {
+    const activeCount = runtime.activeSessionCount
+    const totalCount = runtime.sessionCount
+    const channel = runtime.channel
+    if (typeof activeCount === 'number' && typeof totalCount === 'number') {
+      const mention = runtime.mentionStandbyCount && runtime.mentionStandbyCount > 0
+        ? ` · ${runtime.mentionStandbyCount} mention-only`
+        : ''
+      const approval = runtime.approvalWaitCount && runtime.approvalWaitCount > 0
+        ? ` · ${runtime.approvalWaitCount} approval-wait`
+        : ''
+      return `${activeCount}/${totalCount} sessions${channel ? ` · ${channel}` : ''}${mention}${approval}`
+    }
+    if (runtime.currentTask) return runtime.currentTask
+  }
+
+  if (isActive) return 'Working'
   return 'Idle'
 }
 
-export function ToolOverlay({
-  officeState,
-  agents,
-  agentTools,
-  subagentCharacters,
-  containerRef,
-  zoom,
-  panRef,
-  onCloseAgent,
-}: ToolOverlayProps) {
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    let rafId = 0
-    const tick = () => {
-      setTick((n) => n + 1)
-      rafId = requestAnimationFrame(tick)
-    }
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
-  }, [])
-
+function buildFrame(
+  officeState: OfficeState,
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  zoom: number,
+  panRef: React.RefObject<{ x: number; y: number }>,
+): OverlayFrame | null {
   const el = containerRef.current
   if (!el) return null
+
   const rect = el.getBoundingClientRect()
   const dpr = window.devicePixelRatio || 1
   const canvasW = Math.round(rect.width * dpr)
@@ -73,6 +93,37 @@ export function ToolOverlay({
   const deviceOffsetX = Math.floor((canvasW - mapW) / 2) + Math.round(panRef.current.x)
   const deviceOffsetY = Math.floor((canvasH - mapH) / 2) + Math.round(panRef.current.y)
 
+  return { dpr, deviceOffsetX, deviceOffsetY }
+}
+
+export function ToolOverlay({
+  officeState,
+  agents,
+  agentTools,
+  agentRuntime,
+  subagentCharacters,
+  containerRef,
+  zoom,
+  panRef,
+  onCloseAgent,
+}: ToolOverlayProps) {
+  const [frame, setFrame] = useState<OverlayFrame | null>(null)
+
+  useEffect(() => {
+    let rafId = 0
+
+    const tick = () => {
+      setFrame(buildFrame(officeState, containerRef, zoom, panRef))
+      rafId = requestAnimationFrame(tick)
+    }
+
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [officeState, containerRef, zoom, panRef])
+
+  if (!frame) return null
+
+  const { dpr, deviceOffsetX, deviceOffsetY } = frame
   const selectedId = officeState.selectedAgentId
   const hoveredId = officeState.hoveredAgentId
 
@@ -108,19 +159,20 @@ export function ToolOverlay({
             activityText = sub ? sub.label : 'Subtask'
           }
         } else {
-          activityText = getActivityText(id, agentTools, ch.isActive)
+          activityText = getActivityText(id, agentTools, agentRuntime, ch.isActive)
         }
 
         // Determine dot color
         const tools = agentTools[id]
         const hasPermission = subHasPermission || tools?.some((t) => t.permissionWait && !t.done)
         const hasActiveTools = tools?.some((t) => !t.done)
-        const isActive = ch.isActive
+        const runtime = agentRuntime[id]
+        const isActive = ch.isActive || runtime?.status === 'active' || (runtime?.activeSessionCount ?? 0) > 0
 
         let dotColor: string | null = null
         if (hasPermission) {
           dotColor = 'var(--pixel-status-permission)'
-        } else if (isActive && hasActiveTools) {
+        } else if (isActive && (hasActiveTools || !isSub)) {
           dotColor = 'var(--pixel-status-active)'
         }
 
@@ -171,8 +223,8 @@ export function ToolOverlay({
                 style={{
                   fontSize: isSub ? '20px' : '22px',
                   fontStyle: isSub ? 'italic' : undefined,
-                  color: 'var(--vscode-foreground, #EEF4FF)',
-                  textShadow: '0 1px 0 rgba(0, 0, 0, 0.85)',
+                  color: 'var(--pixel-text)',
+                  textShadow: 'var(--pixel-label-shadow)',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                 }}

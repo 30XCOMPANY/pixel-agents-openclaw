@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖当前 zoom 值与变更回调，依赖常量定义缩放范围与提示动画时间
+ * [OUTPUT]: 对外提供 ZoomControls 组件，渲染缩放按钮与短暂 zoom 提示
+ * [POS]: 通用画布控制组件，被 App 挂载在 OfficeCanvas 之上
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { useState, useEffect, useRef } from 'react'
 import {
   ZOOM_MIN,
@@ -46,22 +53,24 @@ export function ZoomControls({ zoom, onZoomChange }: ZoomControlsProps) {
     // Clear existing timers
     if (timerRef.current) clearTimeout(timerRef.current)
     if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-
-    setShowLevel(true)
-    setFadeOut(false)
-
-    // Start fade after delay
-    fadeTimerRef.current = setTimeout(() => {
-      setFadeOut(true)
-    }, ZOOM_LEVEL_FADE_DELAY_MS)
-
-    // Hide completely after delay
-    timerRef.current = setTimeout(() => {
-      setShowLevel(false)
+    const showRaf = requestAnimationFrame(() => {
+      setShowLevel(true)
       setFadeOut(false)
-    }, ZOOM_LEVEL_HIDE_DELAY_MS)
+
+      // Start fade after delay
+      fadeTimerRef.current = setTimeout(() => {
+        setFadeOut(true)
+      }, ZOOM_LEVEL_FADE_DELAY_MS)
+
+      // Hide completely after delay
+      timerRef.current = setTimeout(() => {
+        setShowLevel(false)
+        setFadeOut(false)
+      }, ZOOM_LEVEL_HIDE_DELAY_MS)
+    })
 
     return () => {
+      cancelAnimationFrame(showRaf)
       if (timerRef.current) clearTimeout(timerRef.current)
       if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
     }

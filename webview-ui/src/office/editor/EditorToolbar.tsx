@@ -1,4 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+/**
+ * [INPUT]: 依赖编辑状态 props、家具目录、地板与 sprite 缓存工具
+ * [OUTPUT]: 对外提供 EditorToolbar 组件，渲染编辑工具、颜色面板与家具选择器
+ * [POS]: office/editor 的 UI 层，连接用户操作与 useEditorActions
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { EditTool } from '../types.js'
 import type { TileType as TileTypeVal, FloorColor } from '../types.js'
 import { getCatalogByCategory, buildDynamicCatalog, getActiveCategories } from '../layout/furnitureCatalog.js'
@@ -9,8 +16,8 @@ import { getColorizedFloorSprite, getFloorPatternCount, hasFloorSprites } from '
 const btnStyle: React.CSSProperties = {
   padding: '3px 8px',
   fontSize: '22px',
-  background: 'rgba(255, 255, 255, 0.08)',
-  color: 'rgba(255, 255, 255, 0.7)',
+  background: 'var(--pixel-btn-bg)',
+  color: 'var(--pixel-text-dim)',
   border: '2px solid transparent',
   borderRadius: 0,
   cursor: 'pointer',
@@ -18,16 +25,16 @@ const btnStyle: React.CSSProperties = {
 
 const activeBtnStyle: React.CSSProperties = {
   ...btnStyle,
-  background: 'rgba(90, 140, 255, 0.25)',
-  color: 'rgba(255, 255, 255, 0.9)',
-  border: '2px solid #5a8cff',
+  background: 'var(--pixel-active-bg)',
+  color: 'var(--pixel-text)',
+  border: '2px solid var(--pixel-accent)',
 }
 
 const tabStyle: React.CSSProperties = {
   padding: '2px 6px',
   fontSize: '20px',
   background: 'transparent',
-  color: 'rgba(255, 255, 255, 0.5)',
+  color: 'var(--pixel-text-muted)',
   border: '2px solid transparent',
   borderRadius: 0,
   cursor: 'pointer',
@@ -35,9 +42,25 @@ const tabStyle: React.CSSProperties = {
 
 const activeTabStyle: React.CSSProperties = {
   ...tabStyle,
-  background: 'rgba(255, 255, 255, 0.08)',
-  color: 'rgba(255, 255, 255, 0.8)',
-  border: '2px solid #5a8cff',
+  background: 'var(--pixel-surface-soft)',
+  color: 'var(--pixel-text)',
+  border: '2px solid var(--pixel-accent)',
+}
+
+const compactBtnStyle: React.CSSProperties = {
+  ...btnStyle,
+  fontSize: '20px',
+  padding: '2px 6px',
+}
+
+const colorPanelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 3,
+  padding: '4px 6px',
+  background: 'var(--pixel-surface-soft)',
+  border: '2px solid var(--pixel-border)',
+  borderRadius: 0,
 }
 
 interface EditorToolbarProps {
@@ -54,6 +77,8 @@ interface EditorToolbarProps {
   onWallColorChange: (color: FloorColor) => void
   onSelectedFurnitureColorChange: (color: FloorColor | null) => void
   onFurnitureTypeChange: (type: string) => void
+  onDuplicateSelected: () => void
+  onNudgeSelected: (dx: number, dy: number) => void
   loadedAssets?: LoadedAssetData
 }
 
@@ -79,7 +104,7 @@ function FloorPatternPreview({ patternIndex, color, selected, onClick }: {
     ctx.imageSmoothingEnabled = false
 
     if (!hasFloorSprites()) {
-      ctx.fillStyle = '#444'
+      ctx.fillStyle = '#AEBBC3'
       ctx.fillRect(0, 0, displaySize, displaySize)
       return
     }
@@ -97,12 +122,12 @@ function FloorPatternPreview({ patternIndex, color, selected, onClick }: {
         width: displaySize,
         height: displaySize,
         padding: 0,
-        border: selected ? '2px solid #5a8cff' : '2px solid #4a4a6a',
+        border: selected ? '2px solid var(--pixel-accent)' : '2px solid var(--pixel-border)',
         borderRadius: 0,
         cursor: 'pointer',
         overflow: 'hidden',
         flexShrink: 0,
-        background: '#2A2A3A',
+        background: 'var(--pixel-surface)',
       }}
     >
       <canvas
@@ -123,16 +148,16 @@ function ColorSlider({ label, value, min, max, onChange }: {
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <span style={{ fontSize: '20px', color: '#999', width: 28, textAlign: 'right', flexShrink: 0 }}>{label}</span>
+      <span style={{ fontSize: '20px', color: 'var(--pixel-text-muted)', width: 28, textAlign: 'right', flexShrink: 0 }}>{label}</span>
       <input
         type="range"
         min={min}
         max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        style={{ flex: 1, height: 12, accentColor: 'rgba(90, 140, 255, 0.8)' }}
+        style={{ flex: 1, height: 12, accentColor: 'var(--pixel-accent)' }}
       />
-      <span style={{ fontSize: '20px', color: '#999', width: 48, textAlign: 'right', flexShrink: 0 }}>{value}</span>
+      <span style={{ fontSize: '20px', color: 'var(--pixel-text-muted)', width: 48, textAlign: 'right', flexShrink: 0 }}>{value}</span>
     </div>
   )
 }
@@ -153,6 +178,8 @@ export function EditorToolbar({
   onWallColorChange,
   onSelectedFurnitureColorChange,
   onFurnitureTypeChange,
+  onDuplicateSelected,
+  onNudgeSelected,
   loadedAssets,
 }: EditorToolbarProps) {
   const [activeCategory, setActiveCategory] = useState<FurnitureCategory>('desks')
@@ -160,27 +187,15 @@ export function EditorToolbar({
   const [showWallColor, setShowWallColor] = useState(false)
   const [showFurnitureColor, setShowFurnitureColor] = useState(false)
 
-  // Build dynamic catalog from loaded assets
-  useEffect(() => {
+  const activeCategories = useMemo(() => {
     if (loadedAssets) {
       try {
-        console.log(`[EditorToolbar] Building dynamic catalog with ${loadedAssets.catalog.length} assets...`)
-        const success = buildDynamicCatalog(loadedAssets)
-        console.log(`[EditorToolbar] Catalog build result: ${success}`)
-
-        // Reset to first available category if current doesn't exist
-        const activeCategories = getActiveCategories()
-        if (activeCategories.length > 0) {
-          const firstCat = activeCategories[0]?.id
-          if (firstCat) {
-            console.log(`[EditorToolbar] Setting active category to: ${firstCat}`)
-            setActiveCategory(firstCat)
-          }
-        }
+        buildDynamicCatalog(loadedAssets)
       } catch (err) {
         console.error(`[EditorToolbar] Error building dynamic catalog:`, err)
       }
     }
+    return getActiveCategories()
   }, [loadedAssets])
 
   const handleColorChange = useCallback((key: keyof FloorColor, value: number) => {
@@ -197,7 +212,10 @@ export function EditorToolbar({
     onSelectedFurnitureColorChange({ ...effectiveColor, [key]: value })
   }, [effectiveColor, onSelectedFurnitureColorChange])
 
-  const categoryItems = getCatalogByCategory(activeCategory)
+  const effectiveCategory = activeCategories.some((cat) => cat.id === activeCategory)
+    ? activeCategory
+    : (activeCategories[0]?.id ?? 'desks')
+  const categoryItems = getCatalogByCategory(effectiveCategory)
 
   const patternCount = getFloorPatternCount()
   // Wall is TileType 0, floor patterns are 1..patternCount
@@ -217,14 +235,14 @@ export function EditorToolbar({
         bottom: 68,
         left: 10,
         zIndex: 50,
-        background: '#1e1e2e',
-        border: '2px solid #4a4a6a',
+        background: 'var(--pixel-surface)',
+        border: '2px solid var(--pixel-border)',
         borderRadius: 0,
         padding: '6px 8px',
         display: 'flex',
         flexDirection: 'column-reverse',
         gap: 6,
-        boxShadow: '2px 2px 0px #0a0a14',
+        boxShadow: 'var(--pixel-shadow)',
         maxWidth: 'calc(100vw - 20px)',
       }}
     >
@@ -283,15 +301,7 @@ export function EditorToolbar({
 
           {/* Color controls (collapsible) — above Wall/Color/Pick */}
           {showColor && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 3,
-              padding: '4px 6px',
-              background: '#181828',
-              border: '2px solid #4a4a6a',
-              borderRadius: 0,
-            }}>
+            <div style={colorPanelStyle}>
               <ColorSlider label="H" value={floorColor.h} min={0} max={360} onChange={(v) => handleColorChange('h', v)} />
               <ColorSlider label="S" value={floorColor.s} min={0} max={100} onChange={(v) => handleColorChange('s', v)} />
               <ColorSlider label="B" value={floorColor.b} min={-100} max={100} onChange={(v) => handleColorChange('b', v)} />
@@ -330,15 +340,7 @@ export function EditorToolbar({
 
           {/* Color controls (collapsible) */}
           {showWallColor && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 3,
-              padding: '4px 6px',
-              background: '#181828',
-              border: '2px solid #4a4a6a',
-              borderRadius: 0,
-            }}>
+            <div style={colorPanelStyle}>
               <ColorSlider label="H" value={wallColor.h} min={0} max={360} onChange={(v) => handleWallColorChange('h', v)} />
               <ColorSlider label="S" value={wallColor.s} min={0} max={100} onChange={(v) => handleWallColorChange('s', v)} />
               <ColorSlider label="B" value={wallColor.b} min={-100} max={100} onChange={(v) => handleWallColorChange('b', v)} />
@@ -354,16 +356,16 @@ export function EditorToolbar({
         <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: 4 }}>
           {/* Category tabs + Pick — just above tool row */}
           <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            {getActiveCategories().map((cat) => (
+            {activeCategories.map((cat) => (
               <button
                 key={cat.id}
-                style={activeCategory === cat.id ? activeTabStyle : tabStyle}
+                style={effectiveCategory === cat.id ? activeTabStyle : tabStyle}
                 onClick={() => setActiveCategory(cat.id)}
               >
                 {cat.label}
               </button>
             ))}
-            <div style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.15)', margin: '0 2px', flexShrink: 0 }} />
+            <div style={{ width: 1, height: 14, background: 'var(--pixel-divider)', margin: '0 2px', flexShrink: 0 }} />
             <button
               style={activeTool === EditTool.FURNITURE_PICK ? activeBtnStyle : btnStyle}
               onClick={() => onToolChange(EditTool.FURNITURE_PICK)}
@@ -385,8 +387,8 @@ export function EditorToolbar({
                   style={{
                     width: thumbSize,
                     height: thumbSize,
-                    background: '#2A2A3A',
-                    border: isSelected ? '2px solid #5a8cff' : '2px solid #4a4a6a',
+                    background: 'var(--pixel-surface)',
+                    border: isSelected ? '2px solid var(--pixel-accent)' : '2px solid var(--pixel-border)',
                     borderRadius: 0,
                     cursor: 'pointer',
                     padding: 0,
@@ -433,7 +435,7 @@ export function EditorToolbar({
             </button>
             {selectedFurnitureColor && (
               <button
-                style={{ ...btnStyle, fontSize: '20px', padding: '2px 6px' }}
+                style={compactBtnStyle}
                 onClick={() => onSelectedFurnitureColorChange(null)}
                 title="Remove color (restore original)"
               >
@@ -441,16 +443,21 @@ export function EditorToolbar({
               </button>
             )}
           </div>
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              style={compactBtnStyle}
+              onClick={onDuplicateSelected}
+              title="Duplicate selected furniture (Cmd/Ctrl+D)"
+            >
+              Duplicate
+            </button>
+            <button style={compactBtnStyle} onClick={() => onNudgeSelected(-1, 0)} title="Move left (Arrow)">←</button>
+            <button style={compactBtnStyle} onClick={() => onNudgeSelected(0, -1)} title="Move up (Arrow)">↑</button>
+            <button style={compactBtnStyle} onClick={() => onNudgeSelected(0, 1)} title="Move down (Arrow)">↓</button>
+            <button style={compactBtnStyle} onClick={() => onNudgeSelected(1, 0)} title="Move right (Arrow)">→</button>
+          </div>
           {showFurnitureColor && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 3,
-              padding: '4px 6px',
-              background: '#181828',
-              border: '2px solid #4a4a6a',
-              borderRadius: 0,
-            }}>
+            <div style={colorPanelStyle}>
               {effectiveColor.colorize ? (
                 <>
                   <ColorSlider label="H" value={effectiveColor.h} min={0} max={360} onChange={(v) => handleSelFurnColorChange('h', v)} />
@@ -464,12 +471,12 @@ export function EditorToolbar({
               )}
               <ColorSlider label="B" value={effectiveColor.b} min={-100} max={100} onChange={(v) => handleSelFurnColorChange('b', v)} />
               <ColorSlider label="C" value={effectiveColor.c} min={-100} max={100} onChange={(v) => handleSelFurnColorChange('c', v)} />
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '20px', color: '#999', cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '20px', color: 'var(--pixel-text-muted)', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={!!effectiveColor.colorize}
                   onChange={(e) => onSelectedFurnitureColorChange({ ...effectiveColor, colorize: e.target.checked || undefined })}
-                  style={{ accentColor: 'rgba(90, 140, 255, 0.8)' }}
+                  style={{ accentColor: 'var(--pixel-accent)' }}
                 />
                 Colorize
               </label>

@@ -31,6 +31,17 @@ npm run openclaw:start
 SESSIONS_FILE=/path/to/sessions.json npm run openclaw:start
 ```
 
+布局模板也可切换（默认 `severance`）：
+
+```bash
+LAYOUT_TEMPLATE=severance npm run openclaw:start
+LAYOUT_TEMPLATE=classic-openplan npm run openclaw:start
+```
+
+模板文件位置：
+- `webview-ui/public/assets/layouts/severance.json`
+- `webview-ui/public/assets/layouts/classic-openplan.json`
+
 ## 皮肤资产说明
 
 - 不需要购买付费皮肤才能运行。

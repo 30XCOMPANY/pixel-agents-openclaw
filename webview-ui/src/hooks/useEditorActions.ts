@@ -1,12 +1,34 @@
+/**
+ * [INPUT]: 依赖 OfficeState/EditorState 与 editorActions/editorHelpers 的纯变换能力，依赖 vscodeApi 持久化布局
+ * [OUTPUT]: 对外提供 useEditorActions hook，暴露编辑模式全部命令与状态
+ * [POS]: webview 编辑交互编排层，连接工具栏/键盘/画布三端行为
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { useState, useCallback, useRef } from 'react'
 import type { OfficeState } from '../office/engine/officeState.js'
 import type { EditorState } from '../office/editor/editorState.js'
 import { EditTool } from '../office/types.js'
 import { TileType } from '../office/types.js'
-import type { OfficeLayout, EditTool as EditToolType, TileType as TileTypeVal, FloorColor, PlacedFurniture } from '../office/types.js'
-import { paintTile, placeFurniture, removeFurniture, moveFurniture, rotateFurniture, toggleFurnitureState, canPlaceFurniture, getWallPlacementRow, expandLayout } from '../office/editor/editorActions.js'
-import type { ExpandDirection } from '../office/editor/editorActions.js'
-import { getCatalogEntry, getRotatedType, getToggledType } from '../office/layout/furnitureCatalog.js'
+import type { OfficeLayout, EditTool as EditToolType, TileType as TileTypeVal, FloorColor } from '../office/types.js'
+import {
+  paintTile,
+  removeFurniture,
+  moveFurniture,
+  duplicateFurniture,
+  rotateFurniture,
+  toggleFurnitureState,
+} from '../office/editor/editorActions.js'
+import { getRotatedType, getToggledType } from '../office/layout/furnitureCatalog.js'
+import { createLayoutFromPreset } from '../office/layout/layoutPresets.js'
+import type { LayoutPresetId } from '../office/layout/layoutPresets.js'
+import {
+  findFurnitureAtTile,
+  expandLayoutToIncludeTile,
+  shouldPushUndoForStroke,
+  isBrushTool,
+} from '../office/editor/editorHelpers.js'
+import { runEditorToolAction } from '../office/editor/editorToolDispatch.js'
 import { defaultZoom } from '../office/toolUtils.js'
 import { vscode } from '../vscodeApi.js'
 import { LAYOUT_SAVE_DEBOUNCE_MS, ZOOM_MIN, ZOOM_MAX } from '../constants.js'
@@ -28,17 +50,26 @@ export interface EditorActions {
   handleSelectedFurnitureColorChange: (color: FloorColor | null) => void
   handleFurnitureTypeChange: (type: string) => void // FurnitureType enum or asset ID
   handleDeleteSelected: () => void
+  handleDuplicateSelected: () => void
+  handleNudgeSelected: (dx: number, dy: number) => void
   handleRotateSelected: () => void
   handleToggleState: () => void
   handleUndo: () => void
   handleRedo: () => void
   handleReset: () => void
   handleSave: () => void
+  handleApplyLayoutPreset: (presetId: LayoutPresetId) => void
   handleZoomChange: (zoom: number) => void
   handleEditorTileAction: (col: number, row: number) => void
   handleEditorEraseAction: (col: number, row: number) => void
   handleEditorSelectionChange: () => void
   handleDragMove: (uid: string, newCol: number, newRow: number) => void
+  handleEditorStrokeStart: () => void
+  handleEditorStrokeEnd: () => void
+}
+
+function cloneColor(color: FloorColor): FloorColor {
+  return { ...color }
 }
 
 export function useEditorActions(
@@ -52,6 +83,21 @@ export function useEditorActions(
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const panRef = useRef({ x: 0, y: 0 })
   const lastSavedLayoutRef = useRef<OfficeLayout | null>(null)
+  const strokeActiveRef = useRef(false)
+  const strokeUndoPushedRef = useRef(false)
+
+  // Track one-time undo checkpoints for slider interactions
+  const wallColorEditActiveRef = useRef(false)
+  const colorEditUidRef = useRef<string | null>(null)
+
+  const bumpEditorTick = useCallback(() => {
+    setEditorTick((n) => n + 1)
+  }, [])
+
+  const setDirtyState = useCallback((dirty: boolean) => {
+    editorState.setDirty(dirty)
+    setIsDirty(dirty)
+  }, [editorState])
 
   // Called by useExtensionMessages on layoutLoaded to set the initial checkpoint
   const setLastSavedLayout = useCallback((layout: OfficeLayout) => {
@@ -66,17 +112,66 @@ export function useEditorActions(
     }, LAYOUT_SAVE_DEBOUNCE_MS)
   }, [])
 
-  // Apply a layout edit: push undo, clear redo, rebuild state, save, mark dirty
-  const applyEdit = useCallback((newLayout: OfficeLayout) => {
+  // Rebuild office state + persist layout. Optionally update dirty/tick flags.
+  const rebuildAndPersist = useCallback((
+    newLayout: OfficeLayout,
+    opts?: { markDirty?: boolean; bumpTick?: boolean },
+  ) => {
     const os = getOfficeState()
-    editorState.pushUndo(os.getLayout())
-    editorState.clearRedo()
-    editorState.isDirty = true
-    setIsDirty(true)
     os.rebuildFromLayout(newLayout)
     saveLayout(newLayout)
-    setEditorTick((n) => n + 1)
-  }, [getOfficeState, editorState, saveLayout])
+    if (opts?.markDirty ?? true) {
+      setDirtyState(true)
+    }
+    if (opts?.bumpTick ?? true) {
+      bumpEditorTick()
+    }
+  }, [getOfficeState, saveLayout, setDirtyState, bumpEditorTick])
+
+  // Apply a layout edit: push undo, clear redo, rebuild state, save, mark dirty
+  const applyEdit = useCallback((newLayout: OfficeLayout, opts?: { pushUndo?: boolean; undoLayout?: OfficeLayout }): boolean => {
+    const os = getOfficeState()
+    const current = os.getLayout()
+    if (newLayout === current) return false
+
+    const pushUndo = opts?.pushUndo ?? true
+    if (pushUndo) {
+      editorState.pushUndo(opts?.undoLayout ?? current)
+      editorState.clearRedo()
+    }
+
+    rebuildAndPersist(newLayout, { markDirty: true, bumpTick: true })
+    return true
+  }, [getOfficeState, editorState, rebuildAndPersist])
+
+  const applyStrokeAwareEdit = useCallback((
+    oldLayout: OfficeLayout,
+    newLayout: OfficeLayout,
+    undoLayout?: OfficeLayout,
+  ): boolean => {
+    if (newLayout === oldLayout) return false
+
+    const pushUndo = shouldPushUndoForStroke(
+      strokeActiveRef.current,
+      editorState.isDragging,
+      strokeUndoPushedRef.current,
+    )
+
+    const changed = applyEdit(newLayout, { pushUndo, undoLayout })
+    if (!changed) return false
+
+    if (strokeActiveRef.current || editorState.isDragging) {
+      strokeUndoPushedRef.current = true
+    }
+
+    return true
+  }, [applyEdit, editorState])
+
+  const selectFurnitureAtTile = useCallback((layout: OfficeLayout, col: number, row: number) => {
+    const hit = findFurnitureAtTile(layout, col, row)
+    editorState.setSelectedFurnitureUid(hit ? hit.uid : null)
+    bumpEditorTick()
+  }, [editorState, bumpEditorTick])
 
   const handleOpenClaude = useCallback(() => {
     vscode.postMessage({ type: 'openClaude' })
@@ -85,234 +180,266 @@ export function useEditorActions(
   const handleToggleEditMode = useCallback(() => {
     setIsEditMode((prev) => {
       const next = !prev
-      editorState.isEditMode = next
-      if (next) {
-        // Initialize wallColor from existing wall tiles so new walls match
-        const os = getOfficeState()
-        const layout = os.getLayout()
-        if (layout.tileColors) {
-          for (let i = 0; i < layout.tiles.length; i++) {
-            if (layout.tiles[i] === TileType.WALL && layout.tileColors[i]) {
-              editorState.wallColor = { ...layout.tileColors[i]! }
-              break
-            }
-          }
-        }
-      } else {
+      editorState.setEditMode(next)
+
+      if (!next) {
         editorState.clearSelection()
         editorState.clearGhost()
         editorState.clearDrag()
         wallColorEditActiveRef.current = false
+        strokeActiveRef.current = false
+        strokeUndoPushedRef.current = false
+        return next
       }
+
+      // Initialize wallColor from existing wall tiles so new walls match
+      const os = getOfficeState()
+      const layout = os.getLayout()
+      if (!layout.tileColors) return next
+
+      for (let i = 0; i < layout.tiles.length; i++) {
+        const color = layout.tileColors[i]
+        if (layout.tiles[i] !== TileType.WALL || !color) continue
+        editorState.setWallColor(cloneColor(color))
+        break
+      }
+
       return next
     })
   }, [editorState, getOfficeState])
 
-  // Tool toggle: clicking already-active tool deselects it (returns to SELECT)
   const handleToolChange = useCallback((tool: EditToolType) => {
-    if (editorState.activeTool === tool) {
-      editorState.activeTool = EditTool.SELECT
-    } else {
-      editorState.activeTool = tool
-    }
+    editorState.toggleTool(tool)
     editorState.clearSelection()
     editorState.clearGhost()
     editorState.clearDrag()
     colorEditUidRef.current = null
     wallColorEditActiveRef.current = false
-    setEditorTick((n) => n + 1)
-  }, [editorState])
+    bumpEditorTick()
+  }, [editorState, bumpEditorTick])
 
   const handleTileTypeChange = useCallback((type: TileTypeVal) => {
-    editorState.selectedTileType = type
-    setEditorTick((n) => n + 1)
-  }, [editorState])
+    editorState.setSelectedTileType(type)
+    bumpEditorTick()
+  }, [editorState, bumpEditorTick])
 
   const handleFloorColorChange = useCallback((color: FloorColor) => {
-    editorState.floorColor = color
-    setEditorTick((n) => n + 1)
-  }, [editorState])
-
-  // Track whether we've already pushed undo for the current wall color editing session
-  const wallColorEditActiveRef = useRef(false)
+    editorState.setFloorColor(color)
+    bumpEditorTick()
+  }, [editorState, bumpEditorTick])
 
   const handleWallColorChange = useCallback((color: FloorColor) => {
-    editorState.wallColor = color
+    editorState.setWallColor(color)
 
-    // Update all existing wall tiles to the new color
     const os = getOfficeState()
     const layout = os.getLayout()
     const existingColors = layout.tileColors || new Array(layout.tiles.length).fill(null)
     const newColors = [...existingColors]
+
     let changed = false
     for (let i = 0; i < layout.tiles.length; i++) {
-      if (layout.tiles[i] === TileType.WALL) {
-        newColors[i] = { ...color }
-        changed = true
-      }
+      if (layout.tiles[i] !== TileType.WALL) continue
+      newColors[i] = cloneColor(color)
+      changed = true
     }
+
     if (changed) {
-      // Push undo only once per editing session (first slider touch)
       if (!wallColorEditActiveRef.current) {
         editorState.pushUndo(layout)
         editorState.clearRedo()
         wallColorEditActiveRef.current = true
       }
-      const newLayout = { ...layout, tileColors: newColors }
-      editorState.isDirty = true
-      setIsDirty(true)
-      os.rebuildFromLayout(newLayout)
-      saveLayout(newLayout)
-    }
-    setEditorTick((n) => n + 1)
-  }, [editorState, getOfficeState, saveLayout])
 
-  // Track which uid we've already pushed undo for during color editing
-  // so dragging sliders doesn't create N undo entries
-  const colorEditUidRef = useRef<string | null>(null)
+      const newLayout = { ...layout, tileColors: newColors }
+      rebuildAndPersist(newLayout, { markDirty: true, bumpTick: false })
+    }
+
+    bumpEditorTick()
+  }, [editorState, getOfficeState, rebuildAndPersist, bumpEditorTick])
 
   const handleSelectedFurnitureColorChange = useCallback((color: FloorColor | null) => {
     const uid = editorState.selectedFurnitureUid
     if (!uid) return
+
     const os = getOfficeState()
     const layout = os.getLayout()
 
-    // Push undo only once per selection (first slider touch)
     if (colorEditUidRef.current !== uid) {
       editorState.pushUndo(layout)
       editorState.clearRedo()
       colorEditUidRef.current = uid
     }
 
-    // Update color on the placed furniture item (null removes color)
-    const newFurniture = layout.furniture.map((f) =>
-      f.uid === uid ? { ...f, color: color ?? undefined } : f,
-    )
-    const newLayout = { ...layout, furniture: newFurniture }
+    const newFurniture = layout.furniture.map((f) => (
+      f.uid === uid
+        ? { ...f, color: color ? cloneColor(color) : undefined }
+        : f
+    ))
 
-    editorState.isDirty = true
-    setIsDirty(true)
-    os.rebuildFromLayout(newLayout)
-    saveLayout(newLayout)
-    setEditorTick((n) => n + 1)
-  }, [getOfficeState, editorState, saveLayout])
+    rebuildAndPersist({ ...layout, furniture: newFurniture }, { markDirty: true, bumpTick: true })
+  }, [getOfficeState, editorState, rebuildAndPersist])
 
   const handleFurnitureTypeChange = useCallback((type: string) => {
-    // Clicking the same item deselects it (no ghost), stays in furniture mode
     if (editorState.selectedFurnitureType === type) {
-      editorState.selectedFurnitureType = ''
+      editorState.clearSelectedFurnitureType()
       editorState.clearGhost()
     } else {
-      editorState.selectedFurnitureType = type
+      editorState.setSelectedFurnitureType(type)
     }
-    setEditorTick((n) => n + 1)
-  }, [editorState])
+    bumpEditorTick()
+  }, [editorState, bumpEditorTick])
 
   const handleDeleteSelected = useCallback(() => {
     const uid = editorState.selectedFurnitureUid
     if (!uid) return
+
     const os = getOfficeState()
-    const newLayout = removeFurniture(os.getLayout(), uid)
-    if (newLayout !== os.getLayout()) {
+    const layout = os.getLayout()
+    const newLayout = removeFurniture(layout, uid)
+    if (newLayout === layout) return
+
+    applyEdit(newLayout)
+    editorState.clearSelection()
+    colorEditUidRef.current = null
+  }, [getOfficeState, editorState, applyEdit])
+
+  const handleDuplicateSelected = useCallback(() => {
+    const uid = editorState.selectedFurnitureUid
+    if (!uid) return
+
+    const os = getOfficeState()
+    const layout = os.getLayout()
+    const newLayout = duplicateFurniture(layout, uid)
+    if (newLayout === layout) return
+
+    applyEdit(newLayout)
+    const last = newLayout.furniture[newLayout.furniture.length - 1]
+    if (last) editorState.setSelectedFurnitureUid(last.uid)
+    bumpEditorTick()
+  }, [getOfficeState, editorState, applyEdit, bumpEditorTick])
+
+  const handleNudgeSelected = useCallback((dx: number, dy: number) => {
+    const uid = editorState.selectedFurnitureUid
+    if (!uid) return
+
+    const os = getOfficeState()
+    const layout = os.getLayout()
+    const item = layout.furniture.find((f) => f.uid === uid)
+    if (!item) return
+
+    const newLayout = moveFurniture(layout, uid, item.col + dx, item.row + dy)
+    if (newLayout !== layout) {
       applyEdit(newLayout)
-      editorState.clearSelection()
-      colorEditUidRef.current = null
     }
   }, [getOfficeState, editorState, applyEdit])
 
   const handleRotateSelected = useCallback(() => {
-    // If in furniture placement mode, cycle the selected type through the rotation group
     if (editorState.activeTool === EditTool.FURNITURE_PLACE) {
       const rotated = getRotatedType(editorState.selectedFurnitureType, 'cw')
       if (rotated) {
-        editorState.selectedFurnitureType = rotated
-        setEditorTick((n) => n + 1)
+        editorState.setSelectedFurnitureType(rotated)
+        bumpEditorTick()
       }
       return
     }
-    // Otherwise rotate the selected placed furniture
+
     const uid = editorState.selectedFurnitureUid
     if (!uid) return
+
     const os = getOfficeState()
     const newLayout = rotateFurniture(os.getLayout(), uid, 'cw')
     if (newLayout !== os.getLayout()) {
       applyEdit(newLayout)
     }
-  }, [getOfficeState, editorState, applyEdit])
+  }, [getOfficeState, editorState, applyEdit, bumpEditorTick])
 
   const handleToggleState = useCallback(() => {
-    // If in furniture placement mode, toggle the selected type's state
     if (editorState.activeTool === EditTool.FURNITURE_PLACE) {
       const toggled = getToggledType(editorState.selectedFurnitureType)
       if (toggled) {
-        editorState.selectedFurnitureType = toggled
-        setEditorTick((n) => n + 1)
+        editorState.setSelectedFurnitureType(toggled)
+        bumpEditorTick()
       }
       return
     }
-    // Otherwise toggle the selected placed furniture's state
+
     const uid = editorState.selectedFurnitureUid
     if (!uid) return
+
     const os = getOfficeState()
     const newLayout = toggleFurnitureState(os.getLayout(), uid)
     if (newLayout !== os.getLayout()) {
       applyEdit(newLayout)
     }
-  }, [getOfficeState, editorState, applyEdit])
+  }, [getOfficeState, editorState, applyEdit, bumpEditorTick])
+
+  const restoreFromHistory = useCallback((layout: OfficeLayout, pushCurrent: () => void) => {
+    const os = getOfficeState()
+    pushCurrent()
+    os.rebuildFromLayout(layout)
+    saveLayout(layout)
+    setDirtyState(true)
+    bumpEditorTick()
+  }, [getOfficeState, saveLayout, setDirtyState, bumpEditorTick])
 
   const handleUndo = useCallback(() => {
     const prev = editorState.popUndo()
     if (!prev) return
-    const os = getOfficeState()
-    // Push current layout to redo stack before restoring
-    editorState.pushRedo(os.getLayout())
-    os.rebuildFromLayout(prev)
-    saveLayout(prev)
-    editorState.isDirty = true
-    setIsDirty(true)
-    setEditorTick((n) => n + 1)
-  }, [getOfficeState, editorState, saveLayout])
+
+    restoreFromHistory(prev, () => {
+      const os = getOfficeState()
+      editorState.pushRedo(os.getLayout())
+    })
+  }, [editorState, getOfficeState, restoreFromHistory])
 
   const handleRedo = useCallback(() => {
     const next = editorState.popRedo()
     if (!next) return
-    const os = getOfficeState()
-    // Push current layout to undo stack before restoring
-    editorState.pushUndo(os.getLayout())
-    os.rebuildFromLayout(next)
-    saveLayout(next)
-    editorState.isDirty = true
-    setIsDirty(true)
-    setEditorTick((n) => n + 1)
-  }, [getOfficeState, editorState, saveLayout])
+
+    restoreFromHistory(next, () => {
+      const os = getOfficeState()
+      editorState.pushUndo(os.getLayout())
+    })
+  }, [editorState, getOfficeState, restoreFromHistory])
 
   const handleReset = useCallback(() => {
     if (!lastSavedLayoutRef.current) return
     const saved = structuredClone(lastSavedLayoutRef.current)
     applyEdit(saved)
     editorState.reset()
-    setIsDirty(false)
-  }, [editorState, applyEdit])
+    setDirtyState(false)
+  }, [editorState, applyEdit, setDirtyState])
 
   const handleSave = useCallback(() => {
-    // Flush any pending debounced save immediately
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
     }
+
     const os = getOfficeState()
     const layout = os.getLayout()
     lastSavedLayoutRef.current = structuredClone(layout)
     vscode.postMessage({ type: 'saveLayout', layout })
-    editorState.isDirty = false
-    setIsDirty(false)
-  }, [getOfficeState, editorState])
+    setDirtyState(false)
+  }, [getOfficeState, setDirtyState])
+
+  const handleApplyLayoutPreset = useCallback((presetId: LayoutPresetId) => {
+    const presetLayout = createLayoutFromPreset(presetId)
+    const changed = applyEdit(presetLayout)
+    if (!changed) return
+
+    editorState.clearSelection()
+    editorState.clearGhost()
+    editorState.clearDrag()
+    colorEditUidRef.current = null
+    wallColorEditActiveRef.current = false
+  }, [applyEdit, editorState])
 
   // Notify React that imperative editor selection changed (e.g., from OfficeCanvas mouseUp)
   const handleEditorSelectionChange = useCallback(() => {
     colorEditUidRef.current = null
-    setEditorTick((n) => n + 1)
-  }, [])
+    bumpEditorTick()
+  }, [bumpEditorTick])
 
   const handleZoomChange = useCallback((newZoom: number) => {
     setZoom(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom)))
@@ -327,173 +454,61 @@ export function useEditorActions(
     }
   }, [getOfficeState, applyEdit])
 
-  /**
-   * Expand layout if click is on a ghost border tile (outside current bounds).
-   * Returns the expanded layout and adjusted col/row, or null if no expansion needed.
-   */
-  const maybeExpand = useCallback((layout: OfficeLayout, col: number, row: number): { layout: OfficeLayout; col: number; row: number; shift: { col: number; row: number } } | null => {
-    if (col >= 0 && col < layout.cols && row >= 0 && row < layout.rows) return null
-
-    // Determine which directions to expand
-    const directions: ExpandDirection[] = []
-    if (col < 0) directions.push('left')
-    if (col >= layout.cols) directions.push('right')
-    if (row < 0) directions.push('up')
-    if (row >= layout.rows) directions.push('down')
-
-    let current = layout
-    let totalShiftCol = 0
-    let totalShiftRow = 0
-    for (const dir of directions) {
-      const result = expandLayout(current, dir)
-      if (!result) return null // exceeded max
-      current = result.layout
-      totalShiftCol += result.shift.col
-      totalShiftRow += result.shift.row
-    }
-
-    return {
-      layout: current,
-      col: col + totalShiftCol,
-      row: row + totalShiftRow,
-      shift: { col: totalShiftCol, row: totalShiftRow },
-    }
-  }, [])
-
   const handleEditorTileAction = useCallback((col: number, row: number) => {
     const os = getOfficeState()
-    let layout = os.getLayout()
-    let effectiveCol = col
-    let effectiveRow = row
+    const sourceLayout = os.getLayout()
+    let layout = sourceLayout
+    let targetCol = col
+    let targetRow = row
 
-    // Handle ghost border expansion for floor/wall tools
+    // Handle ghost border expansion for floor/wall tools.
     if (editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT) {
-      const expansion = maybeExpand(layout, col, row)
+      const expansion = expandLayoutToIncludeTile(layout, col, row)
       if (expansion) {
         layout = expansion.layout
-        effectiveCol = expansion.col
-        effectiveRow = expansion.row
-        // Rebuild from expanded layout first, shifting character positions
+        targetCol = expansion.col
+        targetRow = expansion.row
         os.rebuildFromLayout(layout, expansion.shift)
       }
     }
 
-    if (editorState.activeTool === EditTool.TILE_PAINT) {
-      const newLayout = paintTile(layout, effectiveCol, effectiveRow, editorState.selectedTileType, editorState.floorColor)
-      if (newLayout !== layout) {
-        applyEdit(newLayout)
-      }
-    } else if (editorState.activeTool === EditTool.WALL_PAINT) {
-      const idx = effectiveRow * layout.cols + effectiveCol
-      const isWall = layout.tiles[idx] === TileType.WALL
-
-      // First tile of drag sets direction
-      if (editorState.wallDragAdding === null) {
-        editorState.wallDragAdding = !isWall
-      }
-
-      if (editorState.wallDragAdding) {
-        // Add wall with color
-        const newLayout = paintTile(layout, effectiveCol, effectiveRow, TileType.WALL, editorState.wallColor)
-        if (newLayout !== layout) {
-          applyEdit(newLayout)
-        }
-      } else {
-        // Remove wall → paint floor with current floor settings
-        if (isWall) {
-          const newLayout = paintTile(layout, effectiveCol, effectiveRow, editorState.selectedTileType, editorState.floorColor)
-          if (newLayout !== layout) {
-            applyEdit(newLayout)
-          }
-        }
-      }
-    } else if (editorState.activeTool === EditTool.ERASE) {
-      if (col < 0 || col >= layout.cols || row < 0 || row >= layout.rows) return
-      const idx = row * layout.cols + col
-      if (layout.tiles[idx] === TileType.VOID) return
-      const newLayout = paintTile(layout, col, row, TileType.VOID)
-      if (newLayout !== layout) {
-        applyEdit(newLayout)
-      }
-    } else if (editorState.activeTool === EditTool.FURNITURE_PLACE) {
-      const type = editorState.selectedFurnitureType
-      if (type === '') {
-        // No item selected — act like SELECT (find furniture hit)
-        const hit = layout.furniture.find((f) => {
-          const entry = getCatalogEntry(f.type)
-          if (!entry) return false
-          return col >= f.col && col < f.col + entry.footprintW && row >= f.row && row < f.row + entry.footprintH
-        })
-        editorState.selectedFurnitureUid = hit ? hit.uid : null
-        setEditorTick((n) => n + 1)
-      } else {
-        const placementRow = getWallPlacementRow(type, row)
-        if (!canPlaceFurniture(layout, type, col, placementRow)) return
-        const uid = `f-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-        const placed: PlacedFurniture = { uid, type, col, row: placementRow }
-        if (editorState.pickedFurnitureColor) {
-          placed.color = { ...editorState.pickedFurnitureColor }
-        }
-        const newLayout = placeFurniture(layout, placed)
-        if (newLayout !== layout) {
-          applyEdit(newLayout)
-        }
-      }
-    } else if (editorState.activeTool === EditTool.FURNITURE_PICK) {
-      // Find furniture at clicked tile, copy its type and color for placement
-      const hit = layout.furniture.find((f) => {
-        const entry = getCatalogEntry(f.type)
-        if (!entry) return false
-        return col >= f.col && col < f.col + entry.footprintW && row >= f.row && row < f.row + entry.footprintH
-      })
-      if (hit) {
-        editorState.selectedFurnitureType = hit.type
-        editorState.pickedFurnitureColor = hit.color ? { ...hit.color } : null
-        editorState.activeTool = EditTool.FURNITURE_PLACE
-      }
-      setEditorTick((n) => n + 1)
-    } else if (editorState.activeTool === EditTool.EYEDROPPER) {
-      const idx = row * layout.cols + col
-      const tile = layout.tiles[idx]
-      if (tile !== undefined && tile !== TileType.WALL && tile !== TileType.VOID) {
-        editorState.selectedTileType = tile
-        const color = layout.tileColors?.[idx]
-        if (color) {
-          editorState.floorColor = { ...color }
-        }
-        editorState.activeTool = EditTool.TILE_PAINT
-      } else if (tile === TileType.WALL) {
-        // Pick wall color and switch to wall tool
-        const color = layout.tileColors?.[idx]
-        if (color) {
-          editorState.wallColor = { ...color }
-        }
-        editorState.activeTool = EditTool.WALL_PAINT
-      }
-      setEditorTick((n) => n + 1)
-    } else if (editorState.activeTool === EditTool.SELECT) {
-      const hit = layout.furniture.find((f) => {
-        const entry = getCatalogEntry(f.type)
-        if (!entry) return false
-        return col >= f.col && col < f.col + entry.footprintW && row >= f.row && row < f.row + entry.footprintH
-      })
-      editorState.selectedFurnitureUid = hit ? hit.uid : null
-      setEditorTick((n) => n + 1)
-    }
-  }, [getOfficeState, editorState, applyEdit, maybeExpand])
+    runEditorToolAction({
+      editorState,
+      layout,
+      col: targetCol,
+      row: targetRow,
+      applyEdit: (newLayout) => applyEdit(newLayout, { undoLayout: sourceLayout }),
+      applyStrokeAwareEdit: (oldLayout, newLayout) => applyStrokeAwareEdit(oldLayout, newLayout, sourceLayout),
+      selectFurnitureAtTile,
+      bumpEditorTick,
+    })
+  }, [getOfficeState, editorState, applyEdit, applyStrokeAwareEdit, bumpEditorTick, selectFurnitureAtTile])
 
   const handleEditorEraseAction = useCallback((col: number, row: number) => {
     const os = getOfficeState()
     const layout = os.getLayout()
     if (col < 0 || col >= layout.cols || row < 0 || row >= layout.rows) return
+
     const idx = row * layout.cols + col
-    // Only erase non-VOID tiles
     if (layout.tiles[idx] === TileType.VOID) return
+
     const newLayout = paintTile(layout, col, row, TileType.VOID)
-    if (newLayout !== layout) {
-      applyEdit(newLayout)
+    applyStrokeAwareEdit(layout, newLayout)
+  }, [getOfficeState, applyStrokeAwareEdit])
+
+  const handleEditorStrokeStart = useCallback(() => {
+    strokeActiveRef.current = true
+    strokeUndoPushedRef.current = false
+    if (isBrushTool(editorState.activeTool)) {
+      editorState.startStroke()
     }
-  }, [getOfficeState, applyEdit])
+  }, [editorState])
+
+  const handleEditorStrokeEnd = useCallback(() => {
+    strokeActiveRef.current = false
+    strokeUndoPushedRef.current = false
+    editorState.endStroke()
+  }, [editorState])
 
   return {
     isEditMode,
@@ -512,16 +527,21 @@ export function useEditorActions(
     handleSelectedFurnitureColorChange,
     handleFurnitureTypeChange,
     handleDeleteSelected,
+    handleDuplicateSelected,
+    handleNudgeSelected,
     handleRotateSelected,
     handleToggleState,
     handleUndo,
     handleRedo,
     handleReset,
     handleSave,
+    handleApplyLayoutPreset,
     handleZoomChange,
     handleEditorTileAction,
     handleEditorEraseAction,
     handleEditorSelectionChange,
     handleDragMove,
+    handleEditorStrokeStart,
+    handleEditorStrokeEnd,
   }
 }

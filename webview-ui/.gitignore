@@ -28,3 +28,7 @@ dist-ssr
 !*/assets/characters/
 !*/assets/default-layout.json
 !*/assets/walls.png
+!*/assets/AGENTS.md
+!*/assets/layouts/
+!*/assets/layouts/*.json
+!*/assets/layouts/AGENTS.md

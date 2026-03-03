@@ -1,7 +1,15 @@
-import { TileType, FurnitureType, DEFAULT_COLS, DEFAULT_ROWS, TILE_SIZE, Direction } from '../types.js'
+/**
+ * [INPUT]: 依赖 layout/furnitureCatalog 与 colorize，依赖布局模板系统提供默认布局
+ * [OUTPUT]: 对外提供布局序列化/反序列化与运行时派生计算（tileMap/furniture/seats/blocked）
+ * [POS]: office/layout 的核心编解码层，被 OfficeState 与编辑动作复用
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
+import { TILE_SIZE, Direction } from '../types.js'
 import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, Seat, FurnitureInstance, FloorColor } from '../types.js'
 import { getCatalogEntry } from './furnitureCatalog.js'
 import { getColorizedSprite } from '../colorize.js'
+import { createDefaultLayoutPreset } from './layoutPresets.js'
 
 /** Convert flat tile array from layout into 2D grid */
 export function layoutToTileMap(layout: OfficeLayout): TileTypeVal[][] {
@@ -204,67 +212,15 @@ export function getSeatTiles(seats: Map<string, Seat>): Set<string> {
   return tiles
 }
 
-/** Default floor colors for the two rooms */
-const DEFAULT_LEFT_ROOM_COLOR: FloorColor = { h: 35, s: 30, b: 15, c: 0 }  // warm beige
-const DEFAULT_RIGHT_ROOM_COLOR: FloorColor = { h: 25, s: 45, b: 5, c: 10 }  // warm brown
-const DEFAULT_CARPET_COLOR: FloorColor = { h: 280, s: 40, b: -5, c: 0 }     // purple
-const DEFAULT_DOORWAY_COLOR: FloorColor = { h: 35, s: 25, b: 10, c: 0 }     // tan
+/** Default floor colors tuned for a bright "clinical office" mood */
+const DEFAULT_LEFT_ROOM_COLOR: FloorColor = { h: 202, s: 18, b: 34, c: 10 }
+const DEFAULT_RIGHT_ROOM_COLOR: FloorColor = { h: 196, s: 16, b: 28, c: 8 }
+const DEFAULT_CARPET_COLOR: FloorColor = { h: 186, s: 22, b: 18, c: 12 }
+const DEFAULT_DOORWAY_COLOR: FloorColor = { h: 42, s: 12, b: 24, c: 0 }
 
-/** Create the default office layout matching the current hardcoded office */
+/** Create the built-in default office layout (currently Severance preset). */
 export function createDefaultLayout(): OfficeLayout {
-  const W = TileType.WALL
-  const F1 = TileType.FLOOR_1
-  const F2 = TileType.FLOOR_2
-  const F3 = TileType.FLOOR_3
-  const F4 = TileType.FLOOR_4
-
-  const tiles: TileTypeVal[] = []
-  const tileColors: Array<FloorColor | null> = []
-
-  for (let r = 0; r < DEFAULT_ROWS; r++) {
-    for (let c = 0; c < DEFAULT_COLS; c++) {
-      if (r === 0 || r === DEFAULT_ROWS - 1) { tiles.push(W); tileColors.push(null); continue }
-      if (c === 0 || c === DEFAULT_COLS - 1) { tiles.push(W); tileColors.push(null); continue }
-      if (c === 10) {
-        if (r >= 4 && r <= 6) {
-          tiles.push(F4); tileColors.push(DEFAULT_DOORWAY_COLOR)
-        } else {
-          tiles.push(W); tileColors.push(null)
-        }
-        continue
-      }
-      if (c >= 15 && c <= 18 && r >= 7 && r <= 9) {
-        tiles.push(F3); tileColors.push(DEFAULT_CARPET_COLOR); continue
-      }
-      if (c < 10) {
-        tiles.push(F1); tileColors.push(DEFAULT_LEFT_ROOM_COLOR)
-      } else {
-        tiles.push(F2); tileColors.push(DEFAULT_RIGHT_ROOM_COLOR)
-      }
-    }
-  }
-
-  const furniture: PlacedFurniture[] = [
-    { uid: 'desk-left', type: FurnitureType.DESK, col: 4, row: 3 },
-    { uid: 'desk-right', type: FurnitureType.DESK, col: 13, row: 3 },
-    { uid: 'bookshelf-1', type: FurnitureType.BOOKSHELF, col: 1, row: 5 },
-    { uid: 'plant-left', type: FurnitureType.PLANT, col: 1, row: 1 },
-    { uid: 'cooler-1', type: FurnitureType.COOLER, col: 17, row: 7 },
-    { uid: 'plant-right', type: FurnitureType.PLANT, col: 18, row: 1 },
-    { uid: 'whiteboard-1', type: FurnitureType.WHITEBOARD, col: 15, row: 0 },
-    // Left desk chairs
-    { uid: 'chair-l-top', type: FurnitureType.CHAIR, col: 4, row: 2 },
-    { uid: 'chair-l-bottom', type: FurnitureType.CHAIR, col: 5, row: 5 },
-    { uid: 'chair-l-left', type: FurnitureType.CHAIR, col: 3, row: 4 },
-    { uid: 'chair-l-right', type: FurnitureType.CHAIR, col: 6, row: 3 },
-    // Right desk chairs
-    { uid: 'chair-r-top', type: FurnitureType.CHAIR, col: 13, row: 2 },
-    { uid: 'chair-r-bottom', type: FurnitureType.CHAIR, col: 14, row: 5 },
-    { uid: 'chair-r-left', type: FurnitureType.CHAIR, col: 12, row: 4 },
-    { uid: 'chair-r-right', type: FurnitureType.CHAIR, col: 15, row: 3 },
-  ]
-
-  return { version: 1, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, tiles, tileColors, furniture }
+  return createDefaultLayoutPreset()
 }
 
 /** Serialize layout to JSON string */

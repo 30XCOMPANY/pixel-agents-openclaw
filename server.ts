@@ -4,7 +4,7 @@
 import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { PNG } from 'pngjs';
 
@@ -12,23 +12,104 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3456;
 const AGENTS_ROOT = join(homedir(), '.openclaw', 'agents');
 const SESSIONS_FILE = process.env.SESSIONS_FILE || null;
+const LAYOUT_TEMPLATE = (process.env.LAYOUT_TEMPLATE || 'severance').trim();
 
-// Load default layout
-let defaultLayout: any = null;
-const defaultLayoutPath = join(__dirname, 'dist', 'webview', 'assets', 'default-layout.json');
-if (existsSync(defaultLayoutPath)) {
+function tryReadJson(path: string): any | null {
+  if (!existsSync(path)) return null;
   try {
-    defaultLayout = JSON.parse(readFileSync(defaultLayoutPath, 'utf-8'));
-    console.log('[Pixel Agents] Loaded default layout');
+    return JSON.parse(readFileSync(path, 'utf-8'));
   } catch (e) {
-    console.log('[Pixel Agents] Failed to load default layout:', e);
+    console.log(`[Pixel Agents] Failed to parse JSON: ${path}`, e);
+    return null;
   }
+}
+
+function loadLayoutTemplate(templateId: string): { layout: any | null; source: string | null } {
+  const templateCandidates = [
+    join(__dirname, 'dist', 'webview', 'assets', 'layouts', `${templateId}.json`),
+    join(__dirname, 'webview-ui', 'public', 'assets', 'layouts', `${templateId}.json`),
+  ];
+
+  for (const path of templateCandidates) {
+    const layout = tryReadJson(path);
+    if (layout) return { layout, source: path };
+  }
+  return { layout: null, source: null };
+}
+
+function loadDefaultLayout(): { layout: any | null; source: string | null; template: string } {
+  if (LAYOUT_TEMPLATE) {
+    const fromTemplate = loadLayoutTemplate(LAYOUT_TEMPLATE);
+    if (fromTemplate.layout) {
+      return { layout: fromTemplate.layout, source: fromTemplate.source, template: LAYOUT_TEMPLATE };
+    }
+    console.log(`[Pixel Agents] Layout template not found: "${LAYOUT_TEMPLATE}", falling back to default-layout.json`);
+  }
+
+  const fallbackCandidates = [
+    join(__dirname, 'dist', 'webview', 'assets', 'default-layout.json'),
+    join(__dirname, 'webview-ui', 'public', 'assets', 'default-layout.json'),
+  ];
+  for (const path of fallbackCandidates) {
+    const layout = tryReadJson(path);
+    if (layout) {
+      return { layout, source: path, template: 'default-layout' };
+    }
+  }
+  return { layout: null, source: null, template: 'none' };
+}
+
+const defaultLayoutInfo = loadDefaultLayout();
+let currentLayout = defaultLayoutInfo.layout;
+if (defaultLayoutInfo.source) {
+  console.log(`[Pixel Agents] Loaded layout template "${defaultLayoutInfo.template}" from ${defaultLayoutInfo.source}`);
+} else {
+  console.log('[Pixel Agents] No default layout file found; webview will use built-in fallback layout');
+}
+
+function getLayoutSaveTargets(): string[] {
+  const targets = [
+    join(__dirname, 'webview-ui', 'public', 'assets', 'default-layout.json'),
+    join(__dirname, 'dist', 'webview', 'assets', 'default-layout.json'),
+  ];
+
+  if (defaultLayoutInfo.source) {
+    targets.push(defaultLayoutInfo.source);
+  }
+
+  if (defaultLayoutInfo.template && defaultLayoutInfo.template !== 'default-layout' && defaultLayoutInfo.template !== 'none') {
+    targets.push(
+      join(__dirname, 'webview-ui', 'public', 'assets', 'layouts', `${defaultLayoutInfo.template}.json`),
+      join(__dirname, 'dist', 'webview', 'assets', 'layouts', `${defaultLayoutInfo.template}.json`),
+    );
+  }
+
+  return Array.from(new Set(targets));
+}
+
+function saveLayoutToDisk(layout: any): string[] {
+  const payload = JSON.stringify(layout, null, 2);
+  const targets = getLayoutSaveTargets();
+  const saved: string[] = [];
+  for (const target of targets) {
+    try {
+      writeFileSync(target, payload, 'utf-8');
+      saved.push(target);
+    } catch (err) {
+      console.log(`[Pixel Agents] Failed to write layout: ${target}`, err);
+    }
+  }
+  return saved;
 }
 
 interface SessionData {
   sessionId: string;
   updatedAt: number;
-  chatType: string;
+  chatType?: string;
+  channel?: string;
+  groupActivation?: string;
+  abortedLastRun?: boolean;
+  lastHeartbeatText?: string;
   deliveryContext?: {
     channel?: string;
   };
@@ -38,6 +119,18 @@ interface SessionData {
   };
 }
 
+interface SessionSummary {
+  sessionId: string;
+  sessionKey: string;
+  updatedAt: number;
+  channel: string;
+  chatType: string;
+  isActive: boolean;
+  isMentionStandby: boolean;
+  isApprovalWait: boolean;
+  hasError: boolean;
+}
+
 interface AgentInfo {
   id: number;
   agentName: string;
@@ -45,11 +138,22 @@ interface AgentInfo {
   sessionId: string;
   sessionCount: number;
   activeSessionCount: number;
+  mentionStandbyCount: number;
+  approvalWaitCount: number;
+  errorCount: number;
+  sessionSummaries: SessionSummary[];
   model: string;
   status: string;
   currentTask: string;
   channel?: string;
   palette?: number;
+  snapshotSignature?: string;
+}
+
+interface EventContext {
+  agentId?: number;
+  sessionId?: string;
+  agentName?: string;
 }
 
 interface SessionSnapshot {
@@ -62,6 +166,10 @@ interface AgentAggregate {
   agentName: string;
   sessionCount: number;
   activeSessionCount: number;
+  mentionStandbyCount: number;
+  approvalWaitCount: number;
+  errorCount: number;
+  sessions: SessionSummary[];
   latestUpdatedAt: number;
   primarySessionId: string;
   primarySessionKey: string;
@@ -437,10 +545,28 @@ function aggregateByAgent(sessions: SessionSnapshot[]): Map<string, AgentAggrega
 
   for (const session of sessions) {
     const info = session.data;
-    const channel = info.deliveryContext?.channel || info.origin?.provider || 'unknown';
+    const channel = info.deliveryContext?.channel || info.channel || info.origin?.provider || 'unknown';
     const updatedAt = typeof info.updatedAt === 'number' ? info.updatedAt : 0;
+    const chatType = typeof info.chatType === 'string' ? info.chatType : 'unknown';
     const isRecent = (now - updatedAt) < 5 * 60 * 1000;
-    const isActive = info.chatType !== 'system' && isRecent;
+    const isInteractiveType = chatType === 'direct' || chatType === 'channel' || chatType === 'group';
+    const isActive = isInteractiveType && isRecent;
+    const isMentionStandby = info.groupActivation === 'mention';
+    const isApprovalWait = info.abortedLastRun === true;
+    const hasError = typeof info.lastHeartbeatText === 'string'
+      && info.lastHeartbeatText.trim().length > 0
+      && info.lastHeartbeatText.toLowerCase().includes('rejected');
+    const summary: SessionSummary = {
+      sessionId: info.sessionId,
+      sessionKey: session.sessionKey,
+      updatedAt,
+      channel,
+      chatType,
+      isActive,
+      isMentionStandby,
+      isApprovalWait,
+      hasError,
+    };
     let agg = byAgent.get(session.sourceAgentName);
 
     if (!agg) {
@@ -448,6 +574,10 @@ function aggregateByAgent(sessions: SessionSnapshot[]): Map<string, AgentAggrega
         agentName: session.sourceAgentName,
         sessionCount: 0,
         activeSessionCount: 0,
+        mentionStandbyCount: 0,
+        approvalWaitCount: 0,
+        errorCount: 0,
+        sessions: [],
         latestUpdatedAt: 0,
         primarySessionId: info.sessionId,
         primarySessionKey: session.sessionKey,
@@ -458,6 +588,10 @@ function aggregateByAgent(sessions: SessionSnapshot[]): Map<string, AgentAggrega
 
     agg.sessionCount++;
     if (isActive) agg.activeSessionCount++;
+    if (isMentionStandby) agg.mentionStandbyCount++;
+    if (isApprovalWait) agg.approvalWaitCount++;
+    if (hasError) agg.errorCount++;
+    agg.sessions.push(summary);
 
     if (updatedAt >= agg.latestUpdatedAt) {
       agg.latestUpdatedAt = updatedAt;
@@ -465,6 +599,10 @@ function aggregateByAgent(sessions: SessionSnapshot[]): Map<string, AgentAggrega
       agg.primarySessionKey = session.sessionKey;
       agg.primaryChannel = channel;
     }
+  }
+
+  for (const agg of byAgent.values()) {
+    agg.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   return byAgent;
@@ -479,6 +617,91 @@ const app = express();
 let clients: Set<express.Response> = new Set();
 let agents: Map<string, AgentInfo> = new Map();
 let nextAgentId = 1;
+let nextEventSeq = 1;
+
+function buildEventPayload(message: Record<string, unknown>, context?: EventContext): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    ...message,
+    event_id: `evt_${Date.now()}_${nextEventSeq++}`,
+    timestamp: Date.now(),
+  };
+  if (typeof context?.agentId === 'number') payload.agent_id = context.agentId;
+  if (typeof context?.sessionId === 'string' && context.sessionId.length > 0) payload.session_id = context.sessionId;
+  if (typeof context?.agentName === 'string' && context.agentName.length > 0) payload.agent_name = context.agentName;
+  return payload;
+}
+
+function writeSse(
+  res: express.Response,
+  message: Record<string, unknown>,
+  context?: EventContext,
+): void {
+  res.write(`data: ${JSON.stringify(buildEventPayload(message, context))}\n\n`);
+}
+
+function findAgentById(id: number): AgentInfo | null {
+  for (const agent of agents.values()) {
+    if (agent.id === id) return agent;
+  }
+  return null;
+}
+
+function buildSessionsDigest(sessions: SessionSummary[]): string {
+  return sessions
+    .map((s) => [
+      s.sessionId,
+      s.updatedAt,
+      s.channel,
+      s.chatType,
+      s.isActive ? 1 : 0,
+      s.isMentionStandby ? 1 : 0,
+      s.isApprovalWait ? 1 : 0,
+      s.hasError ? 1 : 0,
+    ].join(':'))
+    .join('|');
+}
+
+function buildAgentSnapshotSignature(agent: AgentInfo): string {
+  return [
+    agent.agentName,
+    agent.sessionId,
+    String(agent.sessionCount),
+    String(agent.activeSessionCount),
+    String(agent.mentionStandbyCount),
+    String(agent.approvalWaitCount),
+    String(agent.errorCount),
+    agent.channel || '',
+    agent.currentTask,
+    agent.status,
+    buildSessionsDigest(agent.sessionSummaries),
+  ].join('|');
+}
+
+function buildAgentSnapshotMessage(agent: AgentInfo): Record<string, unknown> {
+  return {
+    type: 'agentSnapshot',
+    id: agent.id,
+    agentName: agent.agentName,
+    sessionId: agent.sessionId,
+    sessionCount: agent.sessionCount,
+    activeSessionCount: agent.activeSessionCount,
+    mentionStandbyCount: agent.mentionStandbyCount,
+    approvalWaitCount: agent.approvalWaitCount,
+    errorCount: agent.errorCount,
+    channel: agent.channel || 'unknown',
+    currentTask: agent.currentTask,
+    status: agent.status,
+    sessions: agent.sessionSummaries,
+  };
+}
+
+function broadcastAgentSnapshot(agent: AgentInfo): void {
+  broadcast(buildAgentSnapshotMessage(agent), {
+    agentId: agent.id,
+    sessionId: agent.sessionId,
+    agentName: agent.agentName,
+  });
+}
 
 // CORS headers for SSE
 app.use((req, res, next) => {
@@ -486,6 +709,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Headers', 'Cache-Control');
   next();
 });
+app.use(express.json({ limit: '5mb' }));
 
 // Serve static files from webview build output
 app.use(express.static(join(__dirname, 'dist', 'webview')));
@@ -508,17 +732,17 @@ app.get('/events', (req, res) => {
 
   // Send furniture assets first so layout can resolve ASSET_* item types
   if (loadedFurnitureAssets) {
-    res.write(`data: ${JSON.stringify({
+    writeSse(res, {
       type: 'furnitureAssetsLoaded',
       catalog: loadedFurnitureAssets.catalog,
       sprites: loadedFurnitureAssets.sprites,
-    })}\n\n`);
+    });
     console.log(`[Pixel Agents] Sending furnitureAssetsLoaded (${loadedFurnitureAssets.catalog.length} assets)`);
   }
 
   // If bundled layout references custom furniture but catalog is missing,
   // fall back to built-in default layout generated by the client.
-  const needsCustomFurniture = layoutNeedsCustomFurniture(defaultLayout);
+  const needsCustomFurniture = layoutNeedsCustomFurniture(currentLayout);
   const shouldFallbackToBuiltinLayout = needsCustomFurniture && !loadedFurnitureAssets;
   if (shouldFallbackToBuiltinLayout) {
     console.log('[Pixel Agents] Bundled layout needs custom assets; fallback to built-in default layout');
@@ -526,29 +750,33 @@ app.get('/events', (req, res) => {
 
   const layoutMsg = {
     type: 'layoutLoaded',
-    layout: shouldFallbackToBuiltinLayout ? null : defaultLayout,
+    layout: shouldFallbackToBuiltinLayout ? null : currentLayout,
   };
   console.log('[Pixel Agents] Sending layoutLoaded');
-  res.write(`data: ${JSON.stringify(layoutMsg)}\n\n`);
+  writeSse(res, layoutMsg);
+
+  // Send settings
+  writeSse(res, { type: 'settingsLoaded', soundEnabled: true });
+  console.log('[Pixel Agents] Sending settingsLoaded');
 
   // Send character skins when available; webview falls back to built-in templates otherwise.
   if (loadedCharacterSprites) {
-    res.write(`data: ${JSON.stringify({ type: 'characterSpritesLoaded', characters: loadedCharacterSprites.characters })}\n\n`);
+    writeSse(res, { type: 'characterSpritesLoaded', characters: loadedCharacterSprites.characters });
     console.log(`[Pixel Agents] Sending characterSpritesLoaded (${loadedCharacterSprites.characters.length} skins)`);
   } else {
-    res.write(`data: ${JSON.stringify({ type: 'characterSpritesLoaded' })}\n\n`);
+    writeSse(res, { type: 'characterSpritesLoaded' });
   }
   
   // Send floor tile sprites
-  res.write(`data: ${JSON.stringify({ type: 'floorTilesLoaded', sprites: loadedFloorSprites })}\n\n`);
+  writeSse(res, { type: 'floorTilesLoaded', sprites: loadedFloorSprites });
   console.log(`[Pixel Agents] Sending floorTilesLoaded (${loadedFloorSprites.length} patterns)`);
   
   // Send wall tile sprites when available
   if (loadedWallSprites) {
-    res.write(`data: ${JSON.stringify({ type: 'wallTilesLoaded', sprites: loadedWallSprites })}\n\n`);
+    writeSse(res, { type: 'wallTilesLoaded', sprites: loadedWallSprites });
     console.log(`[Pixel Agents] Sending wallTilesLoaded (${loadedWallSprites.length} pieces)`);
   } else {
-    res.write(`data: ${JSON.stringify({ type: 'wallTilesLoaded' })}\n\n`);
+    writeSse(res, { type: 'wallTilesLoaded' });
   }
 
   // Send existing agents - webview expects array of numbers
@@ -556,14 +784,36 @@ app.get('/events', (req, res) => {
   const agentIds = currentAgents.map(a => a.id);
   const agentMeta = Object.fromEntries(currentAgents.map((a) => [
     a.id,
-    { palette: a.palette, hueShift: 0, seatId: null }
+    {
+      palette: a.palette,
+      hueShift: 0,
+      seatId: null,
+      agentName: a.agentName,
+      sessionId: a.sessionId,
+      sessionCount: a.sessionCount,
+      activeSessionCount: a.activeSessionCount,
+      mentionStandbyCount: a.mentionStandbyCount,
+      approvalWaitCount: a.approvalWaitCount,
+      errorCount: a.errorCount,
+      channel: a.channel || 'unknown',
+      currentTask: a.currentTask,
+      status: a.status,
+      sessions: a.sessionSummaries,
+    }
   ]));
   console.log(`[Pixel Agents] Sending existingAgents: ${agentIds.length} agents`);
-  res.write(`data: ${JSON.stringify({ type: 'existingAgents', agents: agentIds, agentMeta })}\n\n`);
+  writeSse(res, { type: 'existingAgents', agents: agentIds, agentMeta });
+  for (const agent of currentAgents) {
+    writeSse(res, buildAgentSnapshotMessage(agent), {
+      agentId: agent.id,
+      sessionId: agent.sessionId,
+      agentName: agent.agentName,
+    });
+  }
 
   // Send a ping to keep connection alive
   const pingInterval = setInterval(() => {
-    res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`);
+    writeSse(res, { type: 'ping' });
   }, 10000);
 
   req.on('close', () => {
@@ -573,14 +823,77 @@ app.get('/events', (req, res) => {
   });
 });
 
+app.post('/api/message', (req, res) => {
+  const msg = req.body as { type?: string; [key: string]: any };
+  if (!msg || typeof msg.type !== 'string') {
+    res.status(400).json({ ok: false, error: 'invalid message' });
+    return;
+  }
+
+  if (msg.type === 'saveLayout') {
+    const layout = msg.layout;
+    const valid = layout
+      && layout.version === 1
+      && Array.isArray(layout.tiles)
+      && Array.isArray(layout.furniture)
+      && typeof layout.cols === 'number'
+      && typeof layout.rows === 'number';
+    if (!valid) {
+      res.status(400).json({ ok: false, error: 'invalid layout' });
+      return;
+    }
+
+    currentLayout = layout;
+    const savedPaths = saveLayoutToDisk(layout);
+    console.log(`[Pixel Agents] Layout saved (${savedPaths.length} targets)`);
+    res.json({ ok: true, savedPaths });
+    return;
+  }
+
+  if (msg.type === 'focusAgent') {
+    const id = Number(msg.id);
+    if (!Number.isNaN(id)) {
+      const agent = findAgentById(id);
+      broadcast({ type: 'agentSelected', id }, {
+        agentId: id,
+        sessionId: agent?.sessionId,
+        agentName: agent?.agentName,
+      });
+    }
+    res.json({ ok: true });
+    return;
+  }
+
+  if (msg.type === 'closeAgent') {
+    const id = Number(msg.id);
+    if (!Number.isNaN(id)) {
+      for (const [key, agent] of agents) {
+        if (agent.id !== id) continue;
+        agents.delete(key);
+        broadcast({ type: 'agentClosed', id }, {
+          agentId: id,
+          sessionId: agent.sessionId,
+          agentName: agent.agentName,
+        });
+        break;
+      }
+    }
+    res.json({ ok: true });
+    return;
+  }
+
+  // Browser mode compatibility: accept-and-ignore unsupported extension commands.
+  res.json({ ok: true, ignored: true });
+});
+
 // API to get current agents
 app.get('/api/agents', (req, res) => {
   res.json(Array.from(agents.values()));
 });
 
 // Broadcast to all connected clients
-function broadcast(message: any): void {
-  const data = `data: ${JSON.stringify(message)}\n\n`;
+function broadcast(message: Record<string, unknown>, context?: EventContext): void {
+  const data = `data: ${JSON.stringify(buildEventPayload(message, context))}\n\n`;
   for (const client of clients) {
     client.write(data);
   }
@@ -602,16 +915,24 @@ function pollSessions(): void {
     for (const [key, agent] of agents) {
       if (!currentKeys.has(key)) {
         agents.delete(key);
-        broadcast({ type: 'agentClosed', id: agent.id });
+        broadcast({ type: 'agentClosed', id: agent.id }, {
+          agentId: agent.id,
+          sessionId: agent.sessionId,
+          agentName: agent.agentName,
+        });
       }
     }
 
     // Create/update one character per OpenClaw agent (not per session)
     for (const [key, agg] of byAgent) {
       let agent = agents.get(key);
-      const status = agg.activeSessionCount > 0 ? 'active' : 'idle';
+      const status = agg.activeSessionCount > 0
+        ? 'active'
+        : (agg.approvalWaitCount > 0 ? 'waiting' : 'idle');
       const channel = agg.primaryChannel;
-      const currentTask = `Agent ${agg.agentName}: ${agg.activeSessionCount}/${agg.sessionCount} active (${channel})`;
+      const standby = agg.mentionStandbyCount > 0 ? `, ${agg.mentionStandbyCount} mention-only` : '';
+      const approval = agg.approvalWaitCount > 0 ? `, ${agg.approvalWaitCount} approval-wait` : '';
+      const currentTask = `Agent ${agg.agentName}: ${agg.activeSessionCount}/${agg.sessionCount} active${standby}${approval} (${channel})`;
 
       if (!agent) {
         const palette = (nextAgentId - 1) % 6; // Cycle through 6 palettes
@@ -622,12 +943,17 @@ function pollSessions(): void {
           sessionId: agg.primarySessionId,
           sessionCount: agg.sessionCount,
           activeSessionCount: agg.activeSessionCount,
+          mentionStandbyCount: agg.mentionStandbyCount,
+          approvalWaitCount: agg.approvalWaitCount,
+          errorCount: agg.errorCount,
+          sessionSummaries: agg.sessions,
           model: 'MiniMax-M2.5',
           status,
           currentTask,
           channel,
           palette,
         };
+        agent.snapshotSignature = buildAgentSnapshotSignature(agent);
         agents.set(key, agent);
         
         console.log(`[Pixel Agents] Creating character ${agent.id} for OpenClaw agent "${agg.agentName}" (${agg.sessionCount} sessions)`);
@@ -638,36 +964,61 @@ function pollSessions(): void {
           id: agent.id,
           palette: agent.palette,
           hueShift: 0,
-          seatId: null
+          seatId: null,
+          status: agent.status,
+          agentName: agent.agentName,
+          sessionId: agent.sessionId,
+          sessionCount: agent.sessionCount,
+          activeSessionCount: agent.activeSessionCount,
+          mentionStandbyCount: agent.mentionStandbyCount,
+          approvalWaitCount: agent.approvalWaitCount,
+          errorCount: agent.errorCount,
+          channel: agent.channel || 'unknown',
+          currentTask: agent.currentTask,
+          sessions: agent.sessionSummaries,
+        }, {
+          agentId: agent.id,
+          sessionId: agent.sessionId,
+          agentName: agent.agentName,
         });
-        
-        // Simulate starting a task after a short delay
-        setTimeout(() => {
-          broadcast({ 
-            type: 'agentToolStart', 
-            id: agent!.id, 
-            toolId: `tool-${Date.now()}`,
-            status: currentTask
-          });
-        }, 1000 + Math.random() * 1000);
+        broadcastAgentSnapshot(agent);
       } else {
+        const prevSnapshotSignature = agent.snapshotSignature || '';
         agent.agentName = agg.agentName;
         agent.sessionKey = agg.primarySessionKey;
         agent.sessionId = agg.primarySessionId;
         agent.sessionCount = agg.sessionCount;
         agent.activeSessionCount = agg.activeSessionCount;
+        agent.mentionStandbyCount = agg.mentionStandbyCount;
+        agent.approvalWaitCount = agg.approvalWaitCount;
+        agent.errorCount = agg.errorCount;
+        agent.sessionSummaries = agg.sessions;
         agent.channel = channel;
         agent.currentTask = currentTask;
 
         // Update existing - send status changes
         if (agent.status !== status) {
           agent.status = status;
-          broadcast({ type: 'agentStatus', id: agent.id, status });
+          broadcast({ type: 'agentStatus', id: agent.id, status }, {
+            agentId: agent.id,
+            sessionId: agent.sessionId,
+            agentName: agent.agentName,
+          });
           
-          if (status === 'idle') {
-            // Clear tools when going idle
-            broadcast({ type: 'agentToolsClear', id: agent.id });
+          if (status !== 'active') {
+            // Clear tools when not active
+            broadcast({ type: 'agentToolsClear', id: agent.id }, {
+              agentId: agent.id,
+              sessionId: agent.sessionId,
+              agentName: agent.agentName,
+            });
           }
+        }
+
+        const nextSnapshotSignature = buildAgentSnapshotSignature(agent);
+        if (nextSnapshotSignature !== prevSnapshotSignature) {
+          agent.snapshotSignature = nextSnapshotSignature;
+          broadcastAgentSnapshot(agent);
         }
       }
     }
@@ -684,6 +1035,7 @@ pollSessions(); // Initial poll
 // Start server
 const server = app.listen(PORT, () => {
   console.log(`[Pixel Agents] Server running at http://localhost:${PORT}`);
+  console.log(`[Pixel Agents] Active layout template: ${defaultLayoutInfo.template}`);
   if (SESSIONS_FILE) {
     console.log(`[Pixel Agents] Reading sessions from override: ${SESSIONS_FILE}`);
   } else {

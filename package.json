@@ -61,7 +61,10 @@
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "import-tileset": "tsx scripts/import-tileset-cli.ts",
-    "openclaw:start": "node --import tsx server.ts"
+    "openclaw:start": "node --import tsx server.ts",
+    "openclaw:start:severance": "LAYOUT_TEMPLATE=severance node --import tsx server.ts",
+    "openclaw:start:classic": "LAYOUT_TEMPLATE=classic-openplan node --import tsx server.ts",
+    "openclaw:start:stardew": "LAYOUT_TEMPLATE=stardew node --import tsx server.ts"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

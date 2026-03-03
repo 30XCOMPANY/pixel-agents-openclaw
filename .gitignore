@@ -7,3 +7,8 @@ node_modules
 /logs
 /sprites-export
 .env
+
+# OpenClaw Swarm runtime
+.openclaw/swarm.db
+.openclaw/active-tasks.json
+.openclaw/logs/

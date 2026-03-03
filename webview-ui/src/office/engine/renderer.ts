@@ -53,11 +53,12 @@ export function renderTileGrid(
 ): void {
   const s = TILE_SIZE * zoom
   const useSpriteFloors = hasFloorSprites()
+  const useSpriteWalls = hasWallSprites()
   const tmRows = tileMap.length
   const tmCols = tmRows > 0 ? tileMap[0].length : 0
   const layoutCols = cols ?? tmCols
 
-  // Floor tiles + wall base color
+  // Floor tiles + fallback wall base color (only when no wall sprites)
   for (let r = 0; r < tmRows; r++) {
     for (let c = 0; c < tmCols; c++) {
       const tile = tileMap[r][c]
@@ -65,15 +66,20 @@ export function renderTileGrid(
       // Skip VOID tiles entirely (transparent)
       if (tile === TileType.VOID) continue
 
-      if (tile === TileType.WALL || !useSpriteFloors) {
-        // Wall tiles or fallback: solid color
-        if (tile === TileType.WALL) {
-          const colorIdx = r * layoutCols + c
-          const wallColor = tileColors?.[colorIdx]
-          ctx.fillStyle = wallColor ? wallColorToHex(wallColor) : WALL_COLOR
-        } else {
-          ctx.fillStyle = FALLBACK_FLOOR_COLOR
-        }
+      if (tile === TileType.WALL) {
+        // Wall sprites are rendered later as z-sorted instances.
+        // Do not draw a second wall layer underneath.
+        if (useSpriteWalls) continue
+
+        const colorIdx = r * layoutCols + c
+        const wallColor = tileColors?.[colorIdx]
+        ctx.fillStyle = wallColor ? wallColorToHex(wallColor) : WALL_COLOR
+        ctx.fillRect(offsetX + c * s, offsetY + r * s, s, s)
+        continue
+      }
+
+      if (!useSpriteFloors) {
+        ctx.fillStyle = FALLBACK_FLOOR_COLOR
         ctx.fillRect(offsetX + c * s, offsetY + r * s, s, s)
         continue
       }

@@ -1,0 +1,20 @@
+repo_path = "/Users/oogie/.openclaw/workspace/pixel-agents-openclaw"
+base_branch = "main"
+worktree_base = "/Users/oogie/code-worktrees/pixel-agents-openclaw"
+default_driver = "codex"
+max_attempts = 3
+notify_on_ready = true
+required_reviews = ["codex", "claude"]
+
+[drivers.codex]
+reasoning = "high"
+
+[drivers.claudecode]
+reasoning = "high"
+
+[drivers.opencode]
+reasoning = "high"
+
+[drivers.gemini-cli]
+reasoning = "high"
+enabled = false

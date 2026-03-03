@@ -16,7 +16,7 @@ const menuItemBase: React.CSSProperties = {
   width: '100%',
   padding: '6px 10px',
   fontSize: '24px',
-  color: 'rgba(255, 255, 255, 0.8)',
+  color: 'var(--pixel-text)',
   background: 'transparent',
   border: 'none',
   borderRadius: 0,
@@ -32,7 +32,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
 
   return (
     <>
-      {/* Dark backdrop — click to close */}
+      {/* Soft backdrop — click to close */}
       <div
         onClick={onClose}
         style={{
@@ -41,7 +41,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           left: 0,
           width: '100%',
           height: '100%',
-          background: 'rgba(0, 0, 0, 0.5)',
+          background: 'var(--pixel-backdrop)',
           zIndex: 49,
         }}
       />
@@ -53,7 +53,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           left: '50%',
           transform: 'translate(-50%, -50%)',
           zIndex: 50,
-          background: 'var(--pixel-bg)',
+          background: 'var(--pixel-surface)',
           border: '2px solid var(--pixel-border)',
           borderRadius: 0,
           padding: '4px',
@@ -72,16 +72,16 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
             marginBottom: '4px',
           }}
         >
-          <span style={{ fontSize: '24px', color: 'rgba(255, 255, 255, 0.9)' }}>Settings</span>
+          <span style={{ fontSize: '24px', color: 'var(--pixel-text)' }}>Settings</span>
           <button
             onClick={onClose}
             onMouseEnter={() => setHovered('close')}
             onMouseLeave={() => setHovered(null)}
             style={{
-              background: hovered === 'close' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+              background: hovered === 'close' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
               border: 'none',
               borderRadius: 0,
-              color: 'rgba(255, 255, 255, 0.6)',
+              color: 'var(--pixel-close-text)',
               fontSize: '24px',
               cursor: 'pointer',
               padding: '0 4px',
@@ -101,7 +101,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           onMouseLeave={() => setHovered(null)}
           style={{
             ...menuItemBase,
-            background: hovered === 'sessions' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+            background: hovered === 'sessions' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
           }}
         >
           Open Sessions Folder
@@ -115,7 +115,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           onMouseLeave={() => setHovered(null)}
           style={{
             ...menuItemBase,
-            background: hovered === 'export' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+            background: hovered === 'export' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
           }}
         >
           Export Layout
@@ -129,7 +129,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           onMouseLeave={() => setHovered(null)}
           style={{
             ...menuItemBase,
-            background: hovered === 'import' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+            background: hovered === 'import' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
           }}
         >
           Import Layout
@@ -145,7 +145,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           onMouseLeave={() => setHovered(null)}
           style={{
             ...menuItemBase,
-            background: hovered === 'sound' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+            background: hovered === 'sound' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
           }}
         >
           <span>Sound Notifications</span>
@@ -153,16 +153,16 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
             style={{
               width: 14,
               height: 14,
-              border: '2px solid rgba(255, 255, 255, 0.5)',
+              border: '2px solid var(--pixel-border-light)',
               borderRadius: 0,
-              background: soundLocal ? 'rgba(90, 140, 255, 0.8)' : 'transparent',
+              background: soundLocal ? 'var(--pixel-accent)' : 'transparent',
               flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               fontSize: '12px',
               lineHeight: 1,
-              color: '#fff',
+              color: 'var(--pixel-surface)',
             }}
           >
             {soundLocal ? 'X' : ''}
@@ -174,7 +174,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
           onMouseLeave={() => setHovered(null)}
           style={{
             ...menuItemBase,
-            background: hovered === 'debug' ? 'rgba(255, 255, 255, 0.08)' : 'transparent',
+            background: hovered === 'debug' ? 'var(--pixel-btn-hover-bg)' : 'transparent',
           }}
         >
           <span>Debug View</span>
@@ -184,7 +184,7 @@ export function SettingsModal({ isOpen, onClose, isDebugMode, onToggleDebugMode 
                 width: 6,
                 height: 6,
                 borderRadius: '50%',
-                background: 'rgba(90, 140, 255, 0.8)',
+                background: 'var(--pixel-accent)',
                 flexShrink: 0,
               }}
             />

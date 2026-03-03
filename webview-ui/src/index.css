@@ -7,49 +7,61 @@
 }
 
 :root {
-  --pixel-bg: #1e1e2e;
-  --pixel-border: #4a4a6a;
-  --pixel-border-light: #6a6a8a;
-  --pixel-accent: #5a8cff;
-  --pixel-green: #5ac88c;
-  --pixel-shadow: 2px 2px 0px #0a0a14;
+  --pixel-bg: #f3f6f7;
+  --pixel-surface: #ffffff;
+  --pixel-surface-soft: #eaf0f3;
+  --pixel-border: #b9c7cf;
+  --pixel-border-light: #8fa5b0;
+  --pixel-accent: #5f8f9c;
+  --pixel-green: #6a9b88;
+  --pixel-shadow: 2px 2px 0px #d6e0e5;
 
   /* Button base */
-  --pixel-text: rgba(255, 255, 255, 0.8);
-  --pixel-text-dim: rgba(255, 255, 255, 0.7);
-  --pixel-btn-bg: rgba(255, 255, 255, 0.08);
-  --pixel-btn-hover-bg: rgba(255, 255, 255, 0.15);
-  --pixel-btn-disabled-opacity: 0.35;
+  --pixel-text: #1f2c33;
+  --pixel-text-dim: #3f4f59;
+  --pixel-text-muted: #61727d;
+  --pixel-btn-bg: #fdfefe;
+  --pixel-btn-hover-bg: #e7edf1;
+  --pixel-btn-disabled-opacity: 0.45;
 
   /* Active/selected button state */
-  --pixel-active-bg: rgba(90, 140, 255, 0.25);
+  --pixel-active-bg: #d9e8ed;
 
   /* Agent button */
-  --pixel-agent-bg: rgba(90, 200, 140, 0.15);
-  --pixel-agent-hover-bg: rgba(90, 200, 140, 0.3);
-  --pixel-agent-border: #5ac88c;
-  --pixel-agent-text: rgba(200, 255, 220, 0.95);
+  --pixel-agent-bg: #deede7;
+  --pixel-agent-hover-bg: #cfe3db;
+  --pixel-agent-border: #7fa592;
+  --pixel-agent-text: #244139;
 
   /* Close button */
-  --pixel-close-text: rgba(255, 255, 255, 0.5);
-  --pixel-close-hover: #e55;
+  --pixel-close-text: #6c7a83;
+  --pixel-close-hover: #ad5252;
 
   /* Hints & confirmations */
-  --pixel-hint-bg: #3278c8;
-  --pixel-reset-text: #ecc;
-  --pixel-danger-bg: #a33;
+  --pixel-hint-bg: #4f7480;
+  --pixel-reset-text: #7c4545;
+  --pixel-danger-bg: #a65757;
 
   /* Vignette */
-  --pixel-vignette: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.6) 100%);
+  --pixel-vignette: radial-gradient(ellipse at center, rgba(255, 255, 255, 0) 54%, rgba(162, 176, 186, 0.32) 100%);
 
   /* Status dot colors */
-  --pixel-status-permission: var(--vscode-charts-yellow, #cca700);
-  --pixel-status-active: var(--vscode-charts-blue, #3794ff);
+  --pixel-status-done: #6f9f8f;
+  --pixel-status-permission: #a88833;
+  --pixel-status-active: #4f889f;
 
   /* ToolOverlay z-index layers */
   --pixel-overlay-z: 100;
   --pixel-overlay-selected-z: 110;
   --pixel-controls-z: 50;
+
+  /* UI surfaces */
+  --pixel-backdrop: rgba(210, 220, 226, 0.62);
+  --pixel-label-bg: rgba(255, 255, 255, 0.9);
+  --pixel-label-border: rgba(146, 166, 176, 0.72);
+  --pixel-label-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
+  --pixel-canvas-bg: #dce3e8;
+  --pixel-divider: rgba(126, 145, 157, 0.44);
 }
 
 html, body, #root {
@@ -57,6 +69,11 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(229, 236, 240, 0.5)),
+    repeating-linear-gradient(90deg, rgba(122, 141, 152, 0.08) 0px, rgba(122, 141, 152, 0.08) 1px, transparent 1px, transparent 36px),
+    #eff3f5;
+  color: var(--pixel-text);
   font-family: 'FS Pixel Sans', sans-serif;
 }
 

@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 characters/layout/tileMap/furnitureCatalog 等模块提供路径、渲染与布局语义
+ * [OUTPUT]: 对外提供 OfficeState 类，管理角色、座位、路径、选择与布局派生状态
+ * [POS]: office/engine 的状态核心，被 OfficeCanvas、消息同步与渲染循环共同消费
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { TILE_SIZE, MATRIX_EFFECT_DURATION, CharacterState, Direction } from '../types.js'
 import {
   PALETTE_COUNT,
@@ -140,6 +147,33 @@ export class OfficeState {
 
   getLayout(): OfficeLayout {
     return this.layout
+  }
+
+  setHovered(tile: { col: number; row: number } | null, agentId: number | null): void {
+    this.hoveredTile = tile
+    this.hoveredAgentId = agentId
+  }
+
+  clearHover(): void {
+    this.setHovered(null, null)
+  }
+
+  setCameraFollow(agentId: number | null): void {
+    this.cameraFollowId = agentId
+  }
+
+  setSelectedAgent(agentId: number | null): void {
+    this.selectedAgentId = agentId
+  }
+
+  focusAgent(agentId: number): void {
+    this.selectedAgentId = agentId
+    this.cameraFollowId = agentId
+  }
+
+  clearFocusedAgent(): void {
+    this.selectedAgentId = null
+    this.cameraFollowId = null
   }
 
   /** Get the blocked-tile key for a character's own seat, or null */

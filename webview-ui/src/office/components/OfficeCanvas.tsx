@@ -1,3 +1,10 @@
+/**
+ * [INPUT]: 依赖 OfficeState/EditorState、渲染器、布局目录与编辑动作回调
+ * [OUTPUT]: 对外提供 OfficeCanvas 组件，承载画布渲染与鼠标交互
+ * [POS]: office 交互入口层，统一处理浏览态与编辑态的画布事件
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { useRef, useEffect, useCallback } from 'react'
 import type { OfficeState } from '../engine/officeState.js'
 import type { EditorState } from '../editor/editorState.js'
@@ -8,6 +15,7 @@ import { TILE_SIZE, EditTool } from '../types.js'
 import { CAMERA_FOLLOW_LERP, CAMERA_FOLLOW_SNAP_THRESHOLD, ZOOM_MIN, ZOOM_MAX, ZOOM_SCROLL_THRESHOLD, PAN_MARGIN_FRACTION } from '../../constants.js'
 import { getCatalogEntry, isRotatable } from '../layout/furnitureCatalog.js'
 import { canPlaceFurniture, getWallPlacementRow } from '../editor/editorActions.js'
+import { findFurnitureAtTile, isBrushTool } from '../editor/editorHelpers.js'
 import { vscode } from '../../vscodeApi.js'
 import { unlockAudio } from '../../notificationSound.js'
 
@@ -19,6 +27,8 @@ interface OfficeCanvasProps {
   onEditorTileAction: (col: number, row: number) => void
   onEditorEraseAction: (col: number, row: number) => void
   onEditorSelectionChange: () => void
+  onEditorStrokeStart: () => void
+  onEditorStrokeEnd: () => void
   onDeleteSelected: () => void
   onRotateSelected: () => void
   onDragMove: (uid: string, newCol: number, newRow: number) => void
@@ -28,7 +38,7 @@ interface OfficeCanvasProps {
   panRef: React.MutableRefObject<{ x: number; y: number }>
 }
 
-export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, onEditorTileAction, onEditorEraseAction, onEditorSelectionChange, onDeleteSelected, onRotateSelected, onDragMove, editorTick: _editorTick, zoom, onZoomChange, panRef }: OfficeCanvasProps) {
+export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, onEditorTileAction, onEditorEraseAction, onEditorSelectionChange, onEditorStrokeStart, onEditorStrokeEnd, onDeleteSelected, onRotateSelected, onDragMove, editorTick: _editorTick, zoom, onZoomChange, panRef }: OfficeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const offsetRef = useRef({ x: 0, y: 0 })
@@ -97,7 +107,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         // Build editor render state
         let editorRender: EditorRenderState | undefined
         if (isEditMode) {
-          const showGhostBorder = editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT || editorState.activeTool === EditTool.ERASE
+          const showGhostBorder = isBrushTool(editorState.activeTool)
           editorRender = {
             showGrid: true,
             ghostSprite: null,
@@ -262,7 +272,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       const row = Math.floor(pos.worldY / TILE_SIZE)
       const layout = officeState.getLayout()
       // In edit mode with floor/wall/erase tool, extend valid range by 1 for ghost border
-      if (isEditMode && (editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT || editorState.activeTool === EditTool.ERASE)) {
+      if (isEditMode && isBrushTool(editorState.activeTool)) {
         if (col < -1 || col > layout.cols || row < -1 || row > layout.rows) return null
         return { col, row }
       }
@@ -307,30 +317,28 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       if (isEditMode) {
         const tile = screenToTile(e.clientX, e.clientY)
         if (tile) {
-          editorState.ghostCol = tile.col
-          editorState.ghostRow = tile.row
+          editorState.setGhost(tile.col, tile.row)
 
           // Drag-to-move: check if cursor moved to different tile
           if (editorState.dragUid && !editorState.isDragMoving) {
             if (tile.col !== editorState.dragStartCol || tile.row !== editorState.dragStartRow) {
-              editorState.isDragMoving = true
+              editorState.setDragMoving(true)
             }
           }
 
           // Paint on drag (tile/wall/erase paint tool only, not during furniture drag)
-          if (editorState.isDragging && (editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT || editorState.activeTool === EditTool.ERASE) && !editorState.dragUid) {
+          if (editorState.isDragging && isBrushTool(editorState.activeTool) && !editorState.dragUid) {
             onEditorTileAction(tile.col, tile.row)
           }
           // Right-click erase drag
-          if (isEraseDraggingRef.current && (editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT || editorState.activeTool === EditTool.ERASE)) {
+          if (isEraseDraggingRef.current && isBrushTool(editorState.activeTool)) {
             const layout = officeState.getLayout()
             if (tile.col >= 0 && tile.col < layout.cols && tile.row >= 0 && tile.row < layout.rows) {
               onEditorEraseAction(tile.col, tile.row)
             }
           }
         } else {
-          editorState.ghostCol = -1
-          editorState.ghostRow = -1
+          editorState.clearGhost()
         }
 
         // Cursor: show grab during drag, pointer over delete button, crosshair otherwise
@@ -345,20 +353,12 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
             } else if (editorState.activeTool === EditTool.FURNITURE_PICK && tile) {
               // Pick mode: show pointer over furniture, crosshair elsewhere
               const layout = officeState.getLayout()
-              const hitFurniture = layout.furniture.find((f) => {
-                const entry = getCatalogEntry(f.type)
-                if (!entry) return false
-                return tile.col >= f.col && tile.col < f.col + entry.footprintW && tile.row >= f.row && tile.row < f.row + entry.footprintH
-              })
+              const hitFurniture = findFurnitureAtTile(layout, tile.col, tile.row)
               canvas.style.cursor = hitFurniture ? 'pointer' : 'crosshair'
             } else if ((editorState.activeTool === EditTool.SELECT || (editorState.activeTool === EditTool.FURNITURE_PLACE && editorState.selectedFurnitureType === '')) && tile) {
               // Check if hovering over furniture
               const layout = officeState.getLayout()
-              const hitFurniture = layout.furniture.find((f) => {
-                const entry = getCatalogEntry(f.type)
-                if (!entry) return false
-                return tile.col >= f.col && tile.col < f.col + entry.footprintW && tile.row >= f.row && tile.row < f.row + entry.footprintH
-              })
+              const hitFurniture = findFurnitureAtTile(layout, tile.col, tile.row)
               canvas.style.cursor = hitFurniture ? 'grab' : 'crosshair'
             } else {
               canvas.style.cursor = 'crosshair'
@@ -372,7 +372,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       if (!pos) return
       const hitId = officeState.getCharacterAt(pos.worldX, pos.worldY)
       const tile = screenToTile(e.clientX, e.clientY)
-      officeState.hoveredTile = tile
+      officeState.setHovered(tile, hitId)
       const canvas = canvasRef.current
       if (canvas) {
         let cursor = 'default'
@@ -393,7 +393,6 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         }
         canvas.style.cursor = cursor
       }
-      officeState.hoveredAgentId = hitId
     },
     [officeState, screenToWorld, screenToTile, isEditMode, editorState, onEditorTileAction, onEditorEraseAction, panRef, hitTestDeleteButton, hitTestRotateButton, clampPan],
   )
@@ -405,7 +404,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       if (e.button === 1) {
         e.preventDefault()
         // Break camera follow on manual pan
-        officeState.cameraFollowId = null
+        officeState.setCameraFollow(null)
         isPanningRef.current = true
         panStartRef.current = {
           mouseX: e.clientX,
@@ -421,10 +420,11 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       // Right-click in edit mode for erasing
       if (e.button === 2 && isEditMode) {
         const tile = screenToTile(e.clientX, e.clientY)
-        if (tile && (editorState.activeTool === EditTool.TILE_PAINT || editorState.activeTool === EditTool.WALL_PAINT || editorState.activeTool === EditTool.ERASE)) {
+        if (tile && isBrushTool(editorState.activeTool)) {
           const layout = officeState.getLayout()
           if (tile.col >= 0 && tile.col < layout.cols && tile.row >= 0 && tile.row < layout.rows) {
             isEraseDraggingRef.current = true
+            onEditorStrokeStart()
             onEditorEraseAction(tile.col, tile.row)
           }
         }
@@ -451,15 +451,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         (editorState.activeTool === EditTool.FURNITURE_PLACE && editorState.selectedFurnitureType === '')
       if (actAsSelect && tile) {
         const layout = officeState.getLayout()
-        // Find all furniture at clicked tile, prefer surface items (on top of desks)
-        let hitFurniture = null as typeof layout.furniture[0] | null
-        for (const f of layout.furniture) {
-          const entry = getCatalogEntry(f.type)
-          if (!entry) continue
-          if (tile.col >= f.col && tile.col < f.col + entry.footprintW && tile.row >= f.row && tile.row < f.row + entry.footprintH) {
-            if (!hitFurniture || entry.canPlaceOnSurfaces) hitFurniture = f
-          }
-        }
+        const hitFurniture = findFurnitureAtTile(layout, tile.col, tile.row)
         if (hitFurniture) {
           // Start drag — record offset from furniture's top-left
           editorState.startDrag(
@@ -478,12 +470,12 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       }
 
       // Non-select tools: start paint drag
-      editorState.isDragging = true
+      onEditorStrokeStart()
       if (tile) {
         onEditorTileAction(tile.col, tile.row)
       }
     },
-    [officeState, isEditMode, editorState, screenToTile, screenToWorld, onEditorTileAction, onEditorEraseAction, onEditorSelectionChange, onDeleteSelected, onRotateSelected, hitTestDeleteButton, hitTestRotateButton, panRef],
+    [officeState, isEditMode, editorState, screenToTile, screenToWorld, onEditorTileAction, onEditorEraseAction, onEditorSelectionChange, onEditorStrokeStart, onDeleteSelected, onRotateSelected, hitTestDeleteButton, hitTestRotateButton, panRef],
   )
 
   const handleMouseUp = useCallback(
@@ -496,6 +488,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       }
       if (e.button === 2) {
         isEraseDraggingRef.current = false
+        onEditorStrokeEnd()
         return
       }
 
@@ -524,7 +517,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
           if (editorState.selectedFurnitureUid === editorState.dragUid) {
             editorState.clearSelection()
           } else {
-            editorState.selectedFurnitureUid = editorState.dragUid
+            editorState.setSelectedFurnitureUid(editorState.dragUid)
           }
         }
         editorState.clearDrag()
@@ -534,10 +527,9 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         return
       }
 
-      editorState.isDragging = false
-      editorState.wallDragAdding = null
+      onEditorStrokeEnd()
     },
-    [editorState, isEditMode, officeState, onDragMove, onEditorSelectionChange],
+    [editorState, isEditMode, officeState, onDragMove, onEditorSelectionChange, onEditorStrokeEnd],
   )
 
   const handleClick = useCallback(
@@ -552,11 +544,9 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         officeState.dismissBubble(hitId)
         // Toggle selection: click same agent deselects, different agent selects
         if (officeState.selectedAgentId === hitId) {
-          officeState.selectedAgentId = null
-          officeState.cameraFollowId = null
+          officeState.clearFocusedAgent()
         } else {
-          officeState.selectedAgentId = hitId
-          officeState.cameraFollowId = hitId
+          officeState.focusAgent(hitId)
         }
         onClick(hitId) // still focus terminal
         return
@@ -576,14 +566,12 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
                 if (selectedCh.seatId === seatId) {
                   // Clicked own seat — send agent back to it
                   officeState.sendToSeat(officeState.selectedAgentId)
-                  officeState.selectedAgentId = null
-                  officeState.cameraFollowId = null
+                  officeState.clearFocusedAgent()
                   return
                 } else if (!seat.assigned) {
                   // Clicked available seat — reassign
                   officeState.reassignSeat(officeState.selectedAgentId, seatId)
-                  officeState.selectedAgentId = null
-                  officeState.cameraFollowId = null
+                  officeState.clearFocusedAgent()
                   // Persist seat assignments (exclude sub-agents)
                   const seats: Record<number, { palette: number; seatId: string | null }> = {}
                   for (const ch of officeState.characters.values()) {
@@ -598,8 +586,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
           }
         }
         // Clicked empty space — deselect
-        officeState.selectedAgentId = null
-        officeState.cameraFollowId = null
+        officeState.clearFocusedAgent()
       }
     },
     [officeState, onClick, screenToWorld, screenToTile, isEditMode],
@@ -608,14 +595,11 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
   const handleMouseLeave = useCallback(() => {
     isPanningRef.current = false
     isEraseDraggingRef.current = false
-    editorState.isDragging = false
-    editorState.wallDragAdding = null
+    onEditorStrokeEnd()
     editorState.clearDrag()
-    editorState.ghostCol = -1
-    editorState.ghostRow = -1
-    officeState.hoveredAgentId = null
-    officeState.hoveredTile = null
-  }, [officeState, editorState])
+    editorState.clearGhost()
+    officeState.clearHover()
+  }, [officeState, editorState, onEditorStrokeEnd])
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -647,7 +631,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
       } else {
         // Pan via trackpad two-finger scroll or mouse wheel
         const dpr = window.devicePixelRatio || 1
-        officeState.cameraFollowId = null
+        officeState.setCameraFollow(null)
         panRef.current = clampPan(
           panRef.current.x - e.deltaX * dpr,
           panRef.current.y - e.deltaY * dpr,
@@ -670,7 +654,7 @@ export function OfficeCanvas({ officeState, onClick, isEditMode, editorState, on
         height: '100%',
         position: 'relative',
         overflow: 'hidden',
-        background: '#1E1E2E',
+        background: 'var(--pixel-canvas-bg)',
       }}
     >
       <canvas

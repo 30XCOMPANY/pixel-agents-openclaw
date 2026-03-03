@@ -1,8 +1,31 @@
+/**
+ * [INPUT]: 依赖 ../types 的布局与瓷砖类型，依赖 furnitureCatalog 与 layoutSerializer 提供家具元数据与占用计算
+ * [OUTPUT]: 对外提供布局编辑纯函数: paintTile/placeFurniture/removeFurniture/moveFurniture/duplicateFurniture/rotateFurniture/toggleFurnitureState/canPlaceFurniture/expandLayout
+ * [POS]: office/editor 的核心变换层，被编辑交互 hooks 与画布交互复用
+ * [PROTOCOL]: 变更时更新此头部，然后检查 AGENTS.md
+ */
+
 import { TileType, MAX_COLS, MAX_ROWS } from '../types.js'
 import { DEFAULT_NEUTRAL_COLOR } from '../../constants.js'
 import type { TileType as TileTypeVal, OfficeLayout, PlacedFurniture, FloorColor } from '../types.js'
 import { getCatalogEntry, getRotatedType, getToggledType } from '../layout/furnitureCatalog.js'
 import { getPlacementBlockedTiles } from '../layout/layoutSerializer.js'
+import { createFurnitureUid } from './furnitureUid.js'
+
+function buildNearbyOffsets(maxRadius: number): Array<{ dc: number; dr: number }> {
+  const offsets: Array<{ dc: number; dr: number }> = []
+  for (let radius = 1; radius <= maxRadius; radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dc), Math.abs(dr)) !== radius) continue
+        offsets.push({ dc, dr })
+      }
+    }
+  }
+  return offsets
+}
+
+const DUPLICATE_SEARCH_OFFSETS = buildNearbyOffsets(8)
 
 /** Paint a single tile with pattern and color. Returns new layout (immutable). */
 export function paintTile(layout: OfficeLayout, col: number, row: number, tileType: TileTypeVal, color?: FloorColor): OfficeLayout {
@@ -51,6 +74,36 @@ export function moveFurniture(layout: OfficeLayout, uid: string, newCol: number,
     ...layout,
     furniture: layout.furniture.map((f) => (f.uid === uid ? { ...f, col: newCol, row: newRow } : f)),
   }
+}
+
+/** Duplicate furniture near original position. Returns new layout (immutable). */
+export function duplicateFurniture(layout: OfficeLayout, uid: string): OfficeLayout {
+  const item = layout.furniture.find((f) => f.uid === uid)
+  if (!item) return layout
+
+  let targetCol = item.col
+  let targetRow = item.row
+  let found = false
+  for (const c of DUPLICATE_SEARCH_OFFSETS) {
+    const col = item.col + c.dc
+    const row = item.row + c.dr
+    if (canPlaceFurniture(layout, item.type, col, row)) {
+      targetCol = col
+      targetRow = row
+      found = true
+      break
+    }
+  }
+  if (!found) return layout
+
+  const clone: PlacedFurniture = {
+    uid: createFurnitureUid(),
+    type: item.type,
+    col: targetCol,
+    row: targetRow,
+    ...(item.color ? { color: { ...item.color } } : {}),
+  }
+  return placeFurniture(layout, clone)
 }
 
 /** Rotate furniture to the next orientation. Returns new layout (immutable). */

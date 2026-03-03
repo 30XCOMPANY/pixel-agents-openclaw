@@ -6,6 +6,8 @@ import { EditorToolbar } from './office/editor/EditorToolbar.js'
 import { EditorState } from './office/editor/editorState.js'
 import { EditTool } from './office/types.js'
 import { isRotatable } from './office/layout/furnitureCatalog.js'
+import { getLayoutPresetOptions } from './office/layout/layoutPresets.js'
+import type { LayoutPresetId } from './office/layout/layoutPresets.js'
 import { vscode } from './vscodeApi.js'
 import { useExtensionMessages } from './hooks/useExtensionMessages.js'
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js'
@@ -42,11 +44,26 @@ const actionBarBtnDisabled: React.CSSProperties = {
   cursor: 'default',
 }
 
+const actionBarSelectStyle: React.CSSProperties = {
+  padding: '4px 8px',
+  fontSize: '20px',
+  background: 'var(--pixel-surface)',
+  color: 'var(--pixel-text)',
+  border: '2px solid var(--pixel-border)',
+  borderRadius: 0,
+}
+
 function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof useEditorActions>; editorState: EditorState }) {
   const [showResetConfirm, setShowResetConfirm] = useState(false)
+  const [showPresetConfirm, setShowPresetConfirm] = useState(false)
+  const presetOptions = getLayoutPresetOptions()
+  const [selectedPreset, setSelectedPreset] = useState<LayoutPresetId>(presetOptions[0]?.id ?? 'severance')
 
+  const dirty = es.isDirty
   const undoDisabled = es.undoStack.length === 0
   const redoDisabled = es.redoStack.length === 0
+  const saveDisabled = !dirty
+  const resetDisabled = !dirty
 
   return (
     <div
@@ -81,16 +98,16 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
         Redo
       </button>
       <button
-        style={actionBarBtnStyle}
-        onClick={editor.handleSave}
+        style={saveDisabled ? actionBarBtnDisabled : actionBarBtnStyle}
+        onClick={saveDisabled ? undefined : editor.handleSave}
         title="Save layout"
       >
         Save
       </button>
-      {!showResetConfirm ? (
+      {!showResetConfirm || resetDisabled ? (
         <button
-          style={actionBarBtnStyle}
-          onClick={() => setShowResetConfirm(true)}
+          style={resetDisabled ? actionBarBtnDisabled : actionBarBtnStyle}
+          onClick={resetDisabled ? undefined : () => setShowResetConfirm(true)}
           title="Reset to last saved layout"
         >
           Reset
@@ -112,6 +129,52 @@ function EditActionBar({ editor, editorState: es }: { editor: ReturnType<typeof 
           </button>
         </div>
       )}
+
+      <div style={{ width: 1, height: 20, background: 'var(--pixel-divider)', margin: '0 2px' }} />
+
+      <select
+        style={actionBarSelectStyle}
+        value={selectedPreset}
+        onChange={(e) => {
+          setSelectedPreset(e.target.value as LayoutPresetId)
+          setShowPresetConfirm(false)
+        }}
+        title="Choose a base room layout preset"
+      >
+        {presetOptions.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.label}
+          </option>
+        ))}
+      </select>
+      {!showPresetConfirm ? (
+        <button
+          style={actionBarBtnStyle}
+          onClick={() => setShowPresetConfirm(true)}
+          title="Apply selected layout preset"
+        >
+          Apply Layout
+        </button>
+      ) : (
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <span style={{ fontSize: '22px', color: 'var(--pixel-reset-text)' }}>Apply?</span>
+          <button
+            style={{ ...actionBarBtnStyle, background: 'var(--pixel-danger-bg)', color: '#fff' }}
+            onClick={() => {
+              setShowPresetConfirm(false)
+              editor.handleApplyLayoutPreset(selectedPreset)
+            }}
+          >
+            Yes
+          </button>
+          <button
+            style={actionBarBtnStyle}
+            onClick={() => setShowPresetConfirm(false)}
+          >
+            No
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -121,7 +184,17 @@ function App() {
 
   const isEditDirty = useCallback(() => editor.isEditMode && editor.isDirty, [editor.isEditMode, editor.isDirty])
 
-  const { agents, selectedAgent, agentTools, agentStatuses, subagentTools, subagentCharacters, layoutReady, loadedAssets } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty)
+  const {
+    agents,
+    selectedAgent,
+    agentTools,
+    agentStatuses,
+    agentRuntime,
+    subagentTools,
+    subagentCharacters,
+    layoutReady,
+    loadedAssets,
+  } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty)
 
   const [isDebugMode, setIsDebugMode] = useState(false)
 
@@ -138,10 +211,13 @@ function App() {
     editor.isEditMode,
     editorState,
     editor.handleDeleteSelected,
+    editor.handleDuplicateSelected,
+    editor.handleNudgeSelected,
     editor.handleRotateSelected,
     editor.handleToggleState,
     editor.handleUndo,
     editor.handleRedo,
+    editor.handleSave,
     useCallback(() => setEditorTickForKeyboard((n) => n + 1), []),
     editor.handleToggleEditMode,
   )
@@ -177,7 +253,17 @@ function App() {
 
   if (!layoutReady) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--vscode-foreground, #E8EEFF)' }}>
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--pixel-bg)',
+          color: 'var(--pixel-text)',
+        }}
+      >
         Loading...
       </div>
     )
@@ -201,6 +287,8 @@ function App() {
         onEditorTileAction={editor.handleEditorTileAction}
         onEditorEraseAction={editor.handleEditorEraseAction}
         onEditorSelectionChange={editor.handleEditorSelectionChange}
+        onEditorStrokeStart={editor.handleEditorStrokeStart}
+        onEditorStrokeEnd={editor.handleEditorStrokeEnd}
         onDeleteSelected={editor.handleDeleteSelected}
         onRotateSelected={editor.handleRotateSelected}
         onDragMove={editor.handleDragMove}
@@ -231,7 +319,7 @@ function App() {
         onToggleDebugMode={handleToggleDebugMode}
       />
 
-      {editor.isEditMode && editor.isDirty && (
+      {editor.isEditMode && (
         <EditActionBar editor={editor} editorState={editorState} />
       )}
 
@@ -241,10 +329,10 @@ function App() {
             position: 'absolute',
             top: 8,
             left: '50%',
-            transform: editor.isDirty ? 'translateX(calc(-50% + 100px))' : 'translateX(-50%)',
+            transform: 'translateX(calc(-50% + 180px))',
             zIndex: 49,
             background: 'var(--pixel-hint-bg)',
-            color: '#fff',
+            color: 'var(--pixel-surface)',
             fontSize: '20px',
             padding: '3px 8px',
             borderRadius: 0,
@@ -279,6 +367,8 @@ function App() {
             onWallColorChange={editor.handleWallColorChange}
             onSelectedFurnitureColorChange={editor.handleSelectedFurnitureColorChange}
             onFurnitureTypeChange={editor.handleFurnitureTypeChange}
+            onDuplicateSelected={editor.handleDuplicateSelected}
+            onNudgeSelected={editor.handleNudgeSelected}
             loadedAssets={loadedAssets}
           />
         )
@@ -288,6 +378,7 @@ function App() {
         officeState={officeState}
         agents={agents}
         agentTools={agentTools}
+        agentRuntime={agentRuntime}
         subagentCharacters={subagentCharacters}
         containerRef={containerRef}
         zoom={editor.zoom}
@@ -301,6 +392,7 @@ function App() {
           selectedAgent={selectedAgent}
           agentTools={agentTools}
           agentStatuses={agentStatuses}
+          agentRuntime={agentRuntime}
           subagentTools={subagentTools}
           onSelectAgent={handleSelectAgent}
         />

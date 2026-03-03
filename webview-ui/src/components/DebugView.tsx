@@ -1,4 +1,5 @@
 import type { ToolActivity } from '../office/types.js'
+import type { AgentRuntimeInfo } from '../hooks/useExtensionMessages.js'
 import { vscode } from '../vscodeApi.js'
 
 interface DebugViewProps {
@@ -6,12 +7,21 @@ interface DebugViewProps {
   selectedAgent: number | null
   agentTools: Record<number, ToolActivity[]>
   agentStatuses: Record<number, string>
+  agentRuntime: Record<number, AgentRuntimeInfo>
   subagentTools: Record<number, Record<string, ToolActivity[]>>
   onSelectAgent: (id: number) => void
 }
 
 /** Z-index just below the floating toolbar (50) so the toolbar stays on top */
 const DEBUG_Z = 40
+
+function formatAgo(updatedAt: number): string {
+  const deltaSec = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000))
+  if (deltaSec < 60) return `${deltaSec}s`
+  const mins = Math.floor(deltaSec / 60)
+  if (mins < 60) return `${mins}m`
+  return `${Math.floor(mins / 60)}h`
+}
 
 function ToolDot({ tool }: { tool: ToolActivity }) {
   return (
@@ -22,10 +32,10 @@ function ToolDot({ tool }: { tool: ToolActivity }) {
         height: 6,
         borderRadius: '50%',
         background: tool.done
-          ? 'var(--vscode-charts-green, #89d185)'
+          ? 'var(--pixel-status-done)'
           : tool.permissionWait
-            ? 'var(--vscode-charts-yellow, #cca700)'
-            : 'var(--vscode-charts-blue, #3794ff)',
+            ? 'var(--pixel-status-permission)'
+            : 'var(--pixel-status-active)',
         display: 'inline-block',
         flexShrink: 0,
       }}
@@ -55,6 +65,7 @@ export function DebugView({
   selectedAgent,
   agentTools,
   agentStatuses,
+  agentRuntime,
   subagentTools,
   onSelectAgent,
 }: DebugViewProps) {
@@ -63,15 +74,20 @@ export function DebugView({
     const tools = agentTools[id] || []
     const subs = subagentTools[id] || {}
     const status = agentStatuses[id]
+    const runtime = agentRuntime[id]
     const hasActiveTools = tools.some((t) => !t.done)
+    const title = runtime?.agentName || `Agent #${id}`
+    const runtimeLine = typeof runtime?.activeSessionCount === 'number' && typeof runtime?.sessionCount === 'number'
+      ? `${runtime.activeSessionCount}/${runtime.sessionCount} sessions${runtime.channel ? ` · ${runtime.channel}` : ''}`
+      : (runtime?.channel || null)
     return (
       <div
         key={id}
         style={{
-          border: `2px solid ${isSelected ? '#5a8cff' : '#4a4a6a'}`,
+          border: `2px solid ${isSelected ? 'var(--pixel-accent)' : 'var(--pixel-border)'}`,
           borderRadius: 0,
           padding: '6px 8px',
-          background: isSelected ? 'var(--vscode-list-activeSelectionBackground, rgba(255,255,255,0.04))' : undefined,
+          background: isSelected ? 'var(--pixel-active-bg)' : 'var(--pixel-surface)',
         }}
       >
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
@@ -81,12 +97,13 @@ export function DebugView({
               borderRadius: 0,
               padding: '6px 10px',
               fontSize: '26px',
-              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : undefined,
-              color: isSelected ? '#fff' : undefined,
+              color: isSelected ? '#fff' : 'var(--pixel-text)',
+              background: isSelected ? 'var(--pixel-accent)' : 'var(--pixel-btn-bg)',
+              border: '1px solid var(--pixel-border)',
               fontWeight: isSelected ? 'bold' : undefined,
             }}
           >
-            Agent #{id}
+            {title}
           </button>
           <button
             onClick={() => vscode.postMessage({ type: 'closeAgent', id })}
@@ -95,14 +112,53 @@ export function DebugView({
               padding: '6px 8px',
               fontSize: '26px',
               opacity: 0.7,
-              background: isSelected ? 'rgba(90, 140, 255, 0.25)' : undefined,
-              color: isSelected ? '#fff' : undefined,
+              color: isSelected ? '#fff' : 'var(--pixel-text)',
+              background: isSelected ? 'var(--pixel-accent)' : 'var(--pixel-btn-bg)',
+              border: '1px solid var(--pixel-border)',
             }}
             title="Close agent"
           >
             ✕
           </button>
         </span>
+        {runtimeLine && (
+          <div style={{ fontSize: '18px', opacity: 0.75, marginTop: 4, paddingLeft: 2 }}>
+            {runtimeLine}
+          </div>
+        )}
+        {runtime?.sessions && runtime.sessions.length > 0 && (
+          <div style={{ marginTop: 4, paddingLeft: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {runtime.sessions.slice(0, 6).map((session) => {
+              const stateText = session.isApprovalWait
+                ? 'approval-wait'
+                : session.isActive
+                  ? 'active'
+                  : (session.isMentionStandby ? 'mention-only' : 'idle')
+              const stateColor = session.isApprovalWait
+                ? 'var(--pixel-status-permission)'
+                : session.isActive
+                  ? 'var(--pixel-status-active)'
+                  : '#8a8a8a'
+              return (
+                <div
+                  key={session.sessionId}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    fontSize: '16px',
+                    opacity: 0.75,
+                  }}
+                >
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: stateColor, flexShrink: 0 }} />
+                  <span style={{ whiteSpace: 'nowrap' }}>{session.channel}</span>
+                  <span>{stateText}</span>
+                  <span>· {formatAgo(session.updatedAt)}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
         {(tools.length > 0 || status === 'waiting') && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginTop: 4, paddingLeft: 4 }}>
             {tools.map((tool) => (
@@ -111,7 +167,7 @@ export function DebugView({
                 {subs[tool.toolId] && subs[tool.toolId].length > 0 && (
                   <div
                     style={{
-                      borderLeft: '2px solid var(--vscode-widget-border, rgba(255,255,255,0.12))',
+                      borderLeft: '2px solid var(--pixel-divider)',
                       marginLeft: 3,
                       paddingLeft: 8,
                       marginTop: 1,
@@ -142,7 +198,7 @@ export function DebugView({
                     width: 6,
                     height: 6,
                     borderRadius: '50%',
-                    background: 'var(--vscode-charts-yellow, #cca700)',
+                    background: 'var(--pixel-status-permission)',
                     display: 'inline-block',
                     flexShrink: 0,
                   }}
@@ -164,8 +220,8 @@ export function DebugView({
         left: 0,
         width: '100%',
         height: '100%',
-        background: 'var(--vscode-editor-background, #13182B)',
-        color: 'var(--vscode-foreground, #E8EEFF)',
+        background: 'var(--pixel-bg)',
+        color: 'var(--pixel-text)',
         zIndex: DEBUG_Z,
         overflow: 'auto',
       }}
