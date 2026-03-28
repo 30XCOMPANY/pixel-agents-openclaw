@@ -1,3 +1,5 @@
+<!-- Agent Swarm Test -->
+
 # Pixel Agents OpenClaw
 
 像素风办公室，可视化你的 OpenClaw agents。每个活跃的 session 对应一个像素小人。
